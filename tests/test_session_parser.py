@@ -1,6 +1,6 @@
 import json
 from datetime import datetime, timezone, timedelta
-from scripts.data import load_session_metas, SessionMeta, parse_conversation_jsonl, ConversationData
+from claude_spend.data import load_session_metas, SessionMeta, parse_conversation_jsonl, ConversationData
 
 
 def test_load_session_metas(tmp_claude_dir, sample_session_meta):

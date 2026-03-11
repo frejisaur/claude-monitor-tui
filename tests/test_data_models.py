@@ -1,4 +1,4 @@
-from scripts.data import TokenUsage, PRICING, calculate_cost
+from claude_spend.data import TokenUsage, PRICING, calculate_cost
 
 
 def test_token_usage_total():

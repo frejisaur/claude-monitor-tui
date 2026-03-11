@@ -1,5 +1,5 @@
 import json
-from scripts.data import (
+from claude_spend.data import (
     TokenUsage, SessionSummary, SubagentCall,
     aggregate_by_day, aggregate_by_project, aggregate_by_model, aggregate_by_subagent_type,
     DailyAggregate, ProjectAggregate, ModelAggregate, SubagentTypeAggregate,

@@ -14,7 +14,7 @@ from textual.widgets import (
 )
 from textual_plotext import PlotextPlot
 
-from data import load_all, DashboardData, calculate_cost, TokenUsage, PRICING, FALLBACK_MODEL
+from claude_spend.data import load_all, DashboardData, calculate_cost, TokenUsage, PRICING, FALLBACK_MODEL
 
 
 def _fmt_tokens(n: int) -> str:

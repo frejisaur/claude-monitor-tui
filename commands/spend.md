@@ -5,7 +5,7 @@ description: "Launch token usage analytics dashboard"
 Run the claude-spend TUI dashboard. Execute this command:
 
 ```bash
-cd "$HOME/code/claude-spend-tui" && pip install -q -r requirements.txt 2>/dev/null && python3 scripts/dashboard.py --days $ARGUMENTS
+uvx --from "$HOME/code/claude-spend-tui" claude-spend --days $ARGUMENTS
 ```
 
 If $ARGUMENTS is empty, use `--days 30` as default.

@@ -1,14 +1,9 @@
 """Automated TUI tests using Textual's Pilot (headless app runner)."""
 
-import sys
-import os
 import pytest
 from datetime import datetime, timezone
 
-# Add scripts dir to path so dashboard.py can do `from data import ...`
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-
-from scripts.data import (
+from claude_spend.data import (
     DashboardData, SessionSummary, TokenUsage, SubagentCall,
     DailyAggregate, ProjectAggregate, ModelAggregate, SubagentTypeAggregate,
     calculate_cost,
@@ -65,7 +60,7 @@ def _make_empty_data() -> DashboardData:
 @pytest.mark.asyncio
 async def test_app_mounts_with_data():
     """App renders all tabs and widgets with valid data."""
-    from scripts.dashboard import SpendApp, BigNumber
+    from claude_spend.dashboard import SpendApp, BigNumber
     from textual.widgets import DataTable
 
     app = SpendApp(_make_test_data(), "Last 7 days")
@@ -92,7 +87,7 @@ async def test_app_mounts_with_data():
 @pytest.mark.asyncio
 async def test_app_mounts_empty():
     """App shows empty message when no sessions."""
-    from scripts.dashboard import SpendApp
+    from claude_spend.dashboard import SpendApp
 
     app = SpendApp(_make_empty_data(), "Last 7 days")
     async with app.run_test(size=(120, 40)) as pilot:
@@ -104,7 +99,7 @@ async def test_app_mounts_empty():
 @pytest.mark.asyncio
 async def test_quit_binding():
     """Pressing q should quit the app."""
-    from scripts.dashboard import SpendApp
+    from claude_spend.dashboard import SpendApp
 
     app = SpendApp(_make_test_data(), "Last 7 days")
     async with app.run_test(size=(120, 40)) as pilot:
@@ -114,7 +109,7 @@ async def test_quit_binding():
 @pytest.mark.asyncio
 async def test_tab_switching():
     """Tab switching doesn't crash."""
-    from scripts.dashboard import SpendApp
+    from claude_spend.dashboard import SpendApp
 
     app = SpendApp(_make_test_data(), "Last 7 days")
     async with app.run_test(size=(120, 40)) as pilot:
@@ -130,7 +125,7 @@ async def test_tab_switching():
 @pytest.mark.asyncio
 async def test_narrow_terminal():
     """App doesn't crash in a narrow terminal."""
-    from scripts.dashboard import SpendApp
+    from claude_spend.dashboard import SpendApp
 
     app = SpendApp(_make_test_data(), "Last 7 days")
     async with app.run_test(size=(40, 20)) as pilot:
