@@ -13,6 +13,7 @@ from textual.widgets import (
     Header, Footer, Static, Label, DataTable, TabbedContent, TabPane,
 )
 from textual_plotext import PlotextPlot
+from rich.text import Text
 
 from claude_spend.data import load_all, DashboardData, calculate_cost, TokenUsage, PRICING, FALLBACK_MODEL
 
@@ -35,6 +36,24 @@ def _fmt_duration(mins: int) -> str:
     if mins >= 60:
         return f"{mins // 60}h {mins % 60}m"
     return f"{mins}m"
+
+
+def _fmt_cache_pct(ratio: float) -> Text:
+    pct = ratio * 100
+    color = "green" if pct >= 75 else "dark_orange" if pct >= 50 else "red"
+    return Text(f"{pct:.0f}%", style=color)
+
+
+def _fmt_cache_rw(ratio: float) -> Text:
+    color = "green" if ratio >= 4 else "dark_orange" if ratio >= 2 else "red"
+    return Text(f"{ratio:.1f}:1", style=color)
+
+
+def _fmt_cost_delta(delta: float) -> Text:
+    color = "green" if delta < 0 else "dark_orange" if delta < 15 else "red"
+    if delta >= 0:
+        return Text(f"+${delta:.2f}", style=color)
+    return Text(f"-${abs(delta):.2f}", style=color)
 
 
 class BigNumber(Static):
