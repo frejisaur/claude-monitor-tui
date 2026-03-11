@@ -171,3 +171,37 @@ def test_aggregate_by_skill_empty():
     from claude_spend.data import aggregate_by_skill
     aggs = aggregate_by_skill([], 0.0)
     assert aggs == []
+
+
+def test_aggregate_by_skill_whitespace_name(tmp_path):
+    """Whitespace skill names in JSONL are normalized to '(unnamed)' by parse_conversation_jsonl."""
+    import json
+    from claude_spend.data import parse_conversation_jsonl
+
+    jsonl_path = tmp_path / "session.jsonl"
+    msg = {
+        "type": "assistant",
+        "message": {
+            "model": "claude-opus-4-6",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_ws1",
+                    "name": "Skill",
+                    "input": {"skill": "   "},
+                }
+            ],
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            },
+        },
+        "timestamp": "2026-03-05T10:01:00.000Z",
+    }
+    with open(jsonl_path, "w") as f:
+        f.write(json.dumps(msg) + "\n")
+
+    data = parse_conversation_jsonl(str(jsonl_path))
+    assert "(unnamed)" in data.skill_invocations

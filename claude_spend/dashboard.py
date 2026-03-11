@@ -385,6 +385,7 @@ class SpendApp(App):
         names = [a.skill_name for a in top]
         counts = [a.invocation_count for a in top]
         plt.bar(names, counts, orientation="horizontal", color="orange+")
+        plt.xlabel("Invocations")
 
     def _populate_skills_table(self) -> None:
         if not self.data.skill_types:

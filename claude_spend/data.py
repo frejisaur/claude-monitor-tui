@@ -169,9 +169,10 @@ def parse_conversation_jsonl(jsonl_path: str) -> ConversationData:
                         "model_param": inp.get("model"),
                     }
                 elif block.get("name") == "Skill":
-                    skill_name = block.get("input", {}).get("skill", "")
-                    if skill_name:
-                        data.skill_invocations.append(skill_name)
+                    skill_name = block.get("input", {}).get("skill", "").strip()
+                    if not skill_name:
+                        skill_name = "(unnamed)"
+                    data.skill_invocations.append(skill_name)
 
         elif msg_type == "progress":
             parent_id = msg.get("parentToolUseID")

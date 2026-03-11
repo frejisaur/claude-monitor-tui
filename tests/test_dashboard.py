@@ -145,6 +145,40 @@ async def test_skills_tab_renders():
 
 
 @pytest.mark.asyncio
+async def test_skills_chart_renders_with_unnamed():
+    """Skills chart renders without crash when data includes (unnamed) skills."""
+    from claude_spend.dashboard import SpendApp
+    from textual.widgets import DataTable
+
+    sessions = [
+        SessionSummary(
+            session_id="u1",
+            skill_invocations=["(unnamed)", "real-skill"],
+            estimated_cost=20.0,
+            usage_by_model={"claude-opus-4-6": TokenUsage(input_tokens=100, output_tokens=50)},
+        )
+    ]
+    skill_aggs = aggregate_by_skill(sessions, 0.0)
+    data = DashboardData(
+        sessions=sessions,
+        daily=aggregate_by_day(sessions),
+        projects=aggregate_by_project(sessions),
+        models=aggregate_by_model(sessions),
+        subagent_types=aggregate_by_subagent_type([]),
+        all_subagent_calls=[],
+        skill_types=skill_aggs,
+        baseline_avg_cost=0.0,
+        total_cost=20.0,
+    )
+    app = SpendApp(data, "Test")
+    async with app.run_test(size=(120, 40)) as pilot:
+        skills_table = app.query_one("#skills-table", DataTable)
+        assert skills_table.row_count >= 1
+        skill_names = [str(skills_table.get_cell_at((r, 0))) for r in range(skills_table.row_count)]
+        assert "(unnamed)" in skill_names or any("unnamed" in n for n in skill_names)
+
+
+@pytest.mark.asyncio
 async def test_narrow_terminal():
     """App doesn't crash in a narrow terminal."""
     from claude_spend.dashboard import SpendApp
