@@ -128,3 +128,12 @@ def test_parse_conversation_missing_file():
     data = parse_conversation_jsonl("/nonexistent/path.jsonl")
     assert data.usage_by_model == {}
     assert data.subagent_calls == []
+
+
+def test_parse_conversation_extracts_turn_count(tmp_path, sample_jsonl_messages):
+    jsonl_path = tmp_path / "session.jsonl"
+    _write_jsonl(jsonl_path, sample_jsonl_messages)
+
+    data = parse_conversation_jsonl(str(jsonl_path))
+    # sample_jsonl_messages has 1 user message with tool result + 1 plain user message
+    assert data.turn_count == 1  # only plain user messages, not tool results

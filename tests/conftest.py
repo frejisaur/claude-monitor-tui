@@ -143,4 +143,12 @@ def sample_jsonl_messages():
             },
             "timestamp": "2026-03-05T10:05:00.000Z",
         },
+        # Plain user message (not a tool result)
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": "looks good, now fix the tests"}],
+            },
+        },
     ]

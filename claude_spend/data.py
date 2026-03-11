@@ -116,6 +116,7 @@ class ConversationData:
     usage_by_model: dict[str, TokenUsage] = field(default_factory=dict)
     subagent_calls: list[SubagentCall] = field(default_factory=list)
     skill_invocations: list[str] = field(default_factory=list)
+    turn_count: int = 0
     parse_errors: int = 0
 
 
@@ -185,6 +186,16 @@ def parse_conversation_jsonl(jsonl_path: str) -> ConversationData:
         elif msg_type == "user":
             result = msg.get("toolUseResult")
             if not isinstance(result, dict) or "totalTokens" not in result:
+                # Plain user message (not a tool result) — count as a turn
+                user_msg = msg.get("message", {})
+                if isinstance(user_msg, dict):
+                    content = user_msg.get("content", [])
+                    has_text = any(
+                        isinstance(b, dict) and b.get("type") == "text"
+                        for b in (content if isinstance(content, list) else [])
+                    )
+                    if has_text:
+                        data.turn_count += 1
                 continue
 
             tool_use_id = None
