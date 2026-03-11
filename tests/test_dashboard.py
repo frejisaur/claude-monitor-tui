@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from claude_spend.data import (
     DashboardData, SessionSummary, TokenUsage, SubagentCall,
     DailyAggregate, ProjectAggregate, ModelAggregate, SubagentTypeAggregate,
+    SkillAggregate, aggregate_by_skill,
     calculate_cost,
     aggregate_by_day, aggregate_by_project, aggregate_by_model, aggregate_by_subagent_type,
 )
@@ -32,14 +33,21 @@ def _make_test_data() -> DashboardData:
                 model="claude-haiku-4-5-20251001", usage=sub_usage,
                 duration_ms=3000, tool_use_count=4,
             )]
+        skills = [["brainstorming", "execute-plan"], ["brainstorming"], []][i]
+        turns = [30, 15, 8][i]
         sessions.append(SessionSummary(
             session_id=f"s{i}", project_path=f"/code/{proj}", project_name=proj,
             start_time=datetime(2026, 3, 5 + i, 10, 0, tzinfo=timezone.utc),
             duration_minutes=30 + i * 10, first_prompt=f"Task {i}: do something",
             usage_by_model={model: usage}, tool_counts={"Bash": 3, "Read": 2},
-            subagent_calls=calls, skill_invocations=[], estimated_cost=cost,
+            subagent_calls=calls, skill_invocations=skills, turn_count=turns,
+            estimated_cost=cost,
         ))
         all_calls.extend(calls)
+
+    no_skill = [s for s in sessions if not s.skill_invocations]
+    baseline = sum(s.estimated_cost for s in no_skill) / max(1, len(no_skill))
+    skill_aggs = aggregate_by_skill(sessions, baseline)
 
     return DashboardData(
         sessions=sessions,
@@ -48,6 +56,8 @@ def _make_test_data() -> DashboardData:
         models=aggregate_by_model(sessions),
         subagent_types=aggregate_by_subagent_type(all_calls),
         all_subagent_calls=all_calls,
+        skill_types=skill_aggs,
+        baseline_avg_cost=baseline,
         total_cost=sum(s.estimated_cost for s in sessions),
         total_tokens=sum(s.total_usage.total for s in sessions),
     )
@@ -66,7 +76,7 @@ async def test_app_mounts_with_data():
     app = SpendApp(_make_test_data(), "Last 7 days")
     async with app.run_test(size=(120, 40)) as pilot:
         big_numbers = app.query("BigNumber")
-        assert len(big_numbers) == 8  # 3 overview + 5 sessions
+        assert len(big_numbers) == 13  # 3 overview + 5 sessions + 5 skills
 
         sessions_table = app.query_one("#sessions-table", DataTable)
         assert sessions_table.row_count == 3
@@ -113,13 +123,25 @@ async def test_tab_switching():
 
     app = SpendApp(_make_test_data(), "Last 7 days")
     async with app.run_test(size=(120, 40)) as pilot:
-        for tab_name in ["Sessions", "Projects", "Models", "Subagents", "Costs", "Overview"]:
+        for tab_name in ["Sessions", "Projects", "Models", "Subagents", "Costs", "Skills", "Overview"]:
             tabs = app.query("Tab")
             for tab in tabs:
                 if tab_name in str(tab.label):
                     await pilot.click(type(tab), offset=(2, 0))
                     break
             await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_skills_tab_renders():
+    from claude_spend.dashboard import SpendApp
+    from textual.widgets import DataTable
+
+    data = _make_test_data()
+    app = SpendApp(data, "Last 7 days")
+    async with app.run_test(size=(120, 40)) as pilot:
+        skills_table = app.query_one("#skills-table", DataTable)
+        assert skills_table.row_count >= 1  # at least brainstorming
 
 
 @pytest.mark.asyncio

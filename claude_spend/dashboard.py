@@ -98,6 +98,10 @@ class SpendApp(App):
         padding: 1;
         margin: 0 1;
     }
+    #skills-numbers {
+        height: auto;
+        max-height: 7;
+    }
     """
 
     BINDINGS = [
@@ -121,7 +125,7 @@ class SpendApp(App):
             yield Footer()
             return
 
-        with TabbedContent("Overview", "Sessions", "Projects", "Models", "Subagents", "Costs"):
+        with TabbedContent("Overview", "Sessions", "Projects", "Models", "Subagents", "Costs", "Skills"):
             with TabPane("Overview", id="tab-overview"):
                 with Horizontal(id="overview-numbers"):
                     yield BigNumber("Total Tokens", _fmt_tokens(self.data.total_tokens))
@@ -160,6 +164,27 @@ class SpendApp(App):
                 yield PlotextPlot(id="costs-chart")
                 yield DataTable(id="costs-table")
 
+            with TabPane("Skills", id="tab-skills"):
+                with Horizontal(id="skills-numbers"):
+                    skill_sessions = [s for s in self.data.sessions if s.skill_invocations]
+                    total_invocations = sum(len(s.skill_invocations) for s in self.data.sessions)
+                    unique_skills = len(set(sk for s in self.data.sessions for sk in s.skill_invocations))
+                    avg_skill_cost = (
+                        sum(s.estimated_cost for s in skill_sessions) / len(skill_sessions)
+                        if skill_sessions else 0
+                    )
+                    avg_skill_cache = (
+                        sum(s.cache_hit_ratio for s in skill_sessions) / len(skill_sessions)
+                        if skill_sessions else 0
+                    )
+                    yield BigNumber("Total Invocations", str(total_invocations))
+                    yield BigNumber("Unique Skills", str(unique_skills))
+                    yield BigNumber("Avg Cost (w/ skill)", _fmt_cost(avg_skill_cost))
+                    yield BigNumber("Avg Cost (no skill)", _fmt_cost(self.data.baseline_avg_cost))
+                    yield BigNumber("Avg Cache Hit", f"{avg_skill_cache * 100:.0f}%")
+                yield PlotextPlot(id="skills-chart")
+                yield DataTable(id="skills-table")
+
         if self.data.parse_errors > 0:
             yield Static(f"[dim]{self.data.parse_errors} lines skipped (parse errors)[/dim]")
         yield Footer()
@@ -177,6 +202,8 @@ class SpendApp(App):
             self._populate_models_chart()
             self._populate_subagents_chart()
             self._populate_costs_chart()
+            self._populate_skills_chart()
+            self._populate_skills_table()
 
     def _populate_sessions_table(self) -> None:
         table = self.query_one("#sessions-table", DataTable)
@@ -334,6 +361,37 @@ class SpendApp(App):
         types = [a.subagent_type for a in self.data.subagent_types]
         tokens = [a.total_usage.total for a in self.data.subagent_types]
         plt.bar(types, tokens, color="green")
+
+    def _populate_skills_chart(self) -> None:
+        if not self.data.skill_types:
+            return
+        plt = self.query_one("#skills-chart", PlotextPlot).plt
+        plt.title("Skill Invocations")
+        plt.theme("dark")
+
+        # Top 10 by invocation count, reversed for horizontal bar (top item last)
+        top = sorted(self.data.skill_types, key=lambda a: a.invocation_count)[-10:]
+        names = [a.skill_name for a in top]
+        counts = [a.invocation_count for a in top]
+        plt.bar(names, counts, orientation="horizontal", color="orange+")
+
+    def _populate_skills_table(self) -> None:
+        if not self.data.skill_types:
+            return
+        table = self.query_one("#skills-table", DataTable)
+        table.cursor_type = "row"
+        table.add_columns("Skill", "Uses", "Avg Cost", "Cost Delta", "Cache Hit", "Cache R:W", "Avg Dur", "Avg Turns")
+        for a in self.data.skill_types:
+            table.add_row(
+                a.skill_name,
+                str(a.invocation_count),
+                _fmt_cost(a.avg_session_cost),
+                _fmt_cost_delta(a.cost_delta),
+                _fmt_cache_pct(a.avg_cache_hit_ratio),
+                _fmt_cache_rw(a.avg_cache_rw_ratio),
+                _fmt_duration(a.avg_duration_minutes),
+                str(a.avg_turn_count),
+            )
 
     def _populate_costs_chart(self) -> None:
         if not self.data.daily:
