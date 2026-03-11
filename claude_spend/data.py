@@ -366,17 +366,18 @@ class DashboardData:
     parse_errors: int = 0
 
 
-def _find_jsonl(claude_dir: str, meta: SessionMeta) -> str | None:
-    """Find the conversation JSONL for a session across project directories."""
+def _build_jsonl_index(claude_dir: str) -> dict[str, str]:
+    """Build session_id -> jsonl_path index by scanning all project directories."""
     projects_dir = os.path.join(claude_dir, "projects")
+    index: dict[str, str] = {}
     if not os.path.isdir(projects_dir):
-        return None
-
-    project_encoded = meta.project_path.replace("/", "-")
-    jsonl_path = os.path.join(projects_dir, project_encoded, f"{meta.session_id}.jsonl")
-    if os.path.isfile(jsonl_path):
-        return jsonl_path
-    return None
+        return index
+    for entry in os.scandir(projects_dir):
+        if entry.is_dir():
+            for f in os.scandir(entry.path):
+                if f.name.endswith(".jsonl"):
+                    index[f.name[:-6]] = f.path
+    return index
 
 
 def load_all(claude_dir: str, days: int | None = 30) -> DashboardData:
@@ -385,12 +386,13 @@ def load_all(claude_dir: str, days: int | None = 30) -> DashboardData:
         return DashboardData()
 
     metas = load_session_metas(claude_dir, days=days)
+    jsonl_index = _build_jsonl_index(claude_dir)
     sessions: list[SessionSummary] = []
     all_subagent_calls: list[SubagentCall] = []
     total_parse_errors = 0
 
     for meta in metas:
-        jsonl_path = _find_jsonl(claude_dir, meta)
+        jsonl_path = jsonl_index.get(meta.session_id)
 
         if jsonl_path:
             conv = parse_conversation_jsonl(jsonl_path)

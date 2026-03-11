@@ -101,15 +101,6 @@ class SpendApp(App):
                     yield BigNumber("Est. API Cost", _fmt_cost(self.data.total_cost))
                     yield BigNumber("Sessions", str(len(self.data.sessions)))
 
-                # Sparkline of daily token totals
-                daily_totals = [
-                    float(sum(u.total for u in d.usage_by_model.values()))
-                    for d in self.data.daily
-                ]
-                if daily_totals:
-                    yield Label(f"Daily Token Usage ({self.days_label})")
-                    yield Sparkline(data=daily_totals, summary_function=max, id="overview-sparkline")
-
                 yield PlotextPlot(id="overview-chart")
 
             with TabPane("Sessions", id="tab-sessions"):
@@ -151,7 +142,7 @@ class SpendApp(App):
         table = self.query_one("#sessions-table", DataTable)
         table.cursor_type = "row"
         table.add_columns("Date", "Project", "First Prompt", "Duration", "Tokens", "Cost")
-        for s in sorted(self.data.sessions, key=lambda x: x.estimated_cost, reverse=True):
+        for s in sorted(self.data.sessions, key=lambda x: x.start_time, reverse=True):
             table.add_row(
                 s.start_time.strftime("%Y-%m-%d %H:%M"),
                 s.project_name[:25],
