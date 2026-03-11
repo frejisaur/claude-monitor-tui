@@ -10,7 +10,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widgets import (
-    Header, Footer, Static, Label, DataTable, TabbedContent, TabPane, Sparkline,
+    Header, Footer, Static, Label, DataTable, TabbedContent, TabPane,
 )
 from textual_plotext import PlotextPlot
 
@@ -41,7 +41,7 @@ class BigNumber(Static):
     """A large metric display widget."""
 
     def __init__(self, label: str, value: str, **kwargs):
-        super().__init__(f"[b]{value}[/b]\n[dim]{label}[/dim]", **kwargs)
+        super().__init__(f"[b]{value}[/b]\n[#888888]{label}[/#888888]", **kwargs)
 
 
 class SpendApp(App):
@@ -57,11 +57,7 @@ class SpendApp(App):
         height: auto;
         max-height: 7;
     }
-    #overview-sparkline {
-        height: 5;
-        margin: 1 2;
-    }
-    .tab-content {
+.tab-content {
         padding: 1;
     }
     #empty-message {
@@ -207,13 +203,28 @@ class SpendApp(App):
         models = sorted({m for d in self.data.daily for m in d.usage_by_model})
         colors = ["red", "blue", "green", "yellow", "cyan"]
 
+        max_val = 0
         for i, model in enumerate(models):
             values = [
                 d.usage_by_model.get(model, TokenUsage()).total
                 for d in self.data.daily
             ]
+            if all(v == 0 for v in values):
+                continue
+            max_val = max(max_val, max(values))
             short_name = model.split("-")[1] if "-" in model else model
             plt.bar(dates, values, label=short_name, color=colors[i % len(colors)])
+
+        if max_val > 0:
+            import math
+            num_ticks = 5
+            step = max_val / num_ticks
+            magnitude = 10 ** math.floor(math.log10(step))
+            step = math.ceil(step / magnitude) * magnitude
+            ticks = [i * step for i in range(num_ticks + 1)]
+            labels = [_fmt_tokens(int(t)) for t in ticks]
+            plt.yticks(ticks, labels)
+        plt.ylabel("Tokens")
 
     def _populate_models_chart(self) -> None:
         if not self.data.models:

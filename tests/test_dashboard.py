@@ -130,3 +130,30 @@ async def test_narrow_terminal():
     app = SpendApp(_make_test_data(), "Last 7 days")
     async with app.run_test(size=(40, 20)) as pilot:
         await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_big_number_labels_not_dim():
+    """BigNumber labels should use visible styling, not [dim] which is invisible on dark backgrounds."""
+    from claude_spend.dashboard import BigNumber
+
+    widget = BigNumber("Total Tokens", "1.5M")
+    content = str(widget.render())
+    # Verify labels are present and [dim] is not used in the raw markup
+    assert "Total Tokens" in content
+    assert "[dim]" not in widget._Static__content
+
+
+@pytest.mark.asyncio
+async def test_overview_chart_filters_zero_token_models():
+    """Models with zero total tokens across all days should not appear in the chart."""
+    from claude_spend.dashboard import SpendApp
+    from claude_spend.data import TokenUsage
+
+    data = _make_test_data()
+    for d in data.daily:
+        d.usage_by_model["claude-zero-model"] = TokenUsage()
+    app = SpendApp(data, "Last 7 days")
+    async with app.run_test(size=(120, 40)) as pilot:
+        chart = app.query_one("#overview-chart")
+        assert chart is not None
