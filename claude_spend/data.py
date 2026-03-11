@@ -252,6 +252,7 @@ class SessionSummary:
     tool_counts: dict[str, int] = field(default_factory=dict)
     subagent_calls: list[SubagentCall] = field(default_factory=list)
     skill_invocations: list[str] = field(default_factory=list)
+    turn_count: int = 0
     estimated_cost: float = 0.0
 
     @property
@@ -436,6 +437,7 @@ def load_all(claude_dir: str, days: int | None = 30) -> DashboardData:
                 tool_counts=meta.tool_counts,
                 subagent_calls=conv.subagent_calls,
                 skill_invocations=conv.skill_invocations,
+                turn_count=conv.turn_count,
                 estimated_cost=cost,
             )
         else:
