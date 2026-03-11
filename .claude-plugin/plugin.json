@@ -1,0 +1,10 @@
+{
+  "name": "claude-spend",
+  "description": "Token usage analytics dashboard for Claude Code",
+  "version": "1.0.0",
+  "author": {
+    "name": "abiz"
+  },
+  "license": "MIT",
+  "keywords": ["analytics", "tokens", "usage", "cost", "dashboard"]
+}
