@@ -62,3 +62,18 @@ def test_calculate_cost_unknown_model_falls_back_to_sonnet():
     cost = calculate_cost(usage, "claude-unknown-model")
     # Falls back to sonnet: $3/MTok
     assert abs(cost - 3.0) < 0.01
+
+
+def test_session_summary_default_start_time_is_aware():
+    """SessionSummary default start_time must be timezone-aware to avoid TypeError on sort."""
+    from claude_spend.data import SessionSummary
+    s = SessionSummary()
+    assert s.start_time.tzinfo is not None
+
+
+def test_session_summary_sortable_with_session_meta():
+    """SessionSummary and SessionMeta defaults must be comparable (both aware)."""
+    from claude_spend.data import SessionSummary, SessionMeta
+    ss = SessionSummary()
+    sm = SessionMeta()
+    assert ss.start_time <= sm.start_time or ss.start_time >= sm.start_time

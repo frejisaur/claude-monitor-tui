@@ -234,7 +234,7 @@ class SessionSummary:
     session_id: str = ""
     project_path: str = ""
     project_name: str = ""
-    start_time: datetime = field(default_factory=lambda: datetime(1970, 1, 1))
+    start_time: datetime = field(default_factory=lambda: datetime(1970, 1, 1, tzinfo=timezone.utc))
     duration_minutes: int = 0
     first_prompt: str = ""
     usage_by_model: dict[str, TokenUsage] = field(default_factory=dict)
