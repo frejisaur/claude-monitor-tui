@@ -428,8 +428,10 @@ class DashboardData:
     models: list[ModelAggregate] = field(default_factory=list)
     subagent_types: list[SubagentTypeAggregate] = field(default_factory=list)
     all_subagent_calls: list[SubagentCall] = field(default_factory=list)
+    skill_types: list[SkillAggregate] = field(default_factory=list)
     total_cost: float = 0.0
     total_tokens: int = 0
+    baseline_avg_cost: float = 0.0
     parse_errors: int = 0
 
 
@@ -508,6 +510,14 @@ def load_all(claude_dir: str, days: int | None = 30) -> DashboardData:
     total_cost = sum(s.estimated_cost for s in sessions)
     total_tokens = sum(s.total_usage.total for s in sessions)
 
+    # Skill aggregation
+    no_skill_sessions = [s for s in sessions if not s.skill_invocations]
+    baseline_avg_cost = (
+        sum(s.estimated_cost for s in no_skill_sessions) / len(no_skill_sessions)
+        if no_skill_sessions else total_cost / max(1, len(sessions))
+    )
+    skill_aggs = aggregate_by_skill(sessions, baseline_avg_cost)
+
     return DashboardData(
         sessions=sessions,
         daily=aggregate_by_day(sessions),
@@ -515,7 +525,9 @@ def load_all(claude_dir: str, days: int | None = 30) -> DashboardData:
         models=aggregate_by_model(sessions),
         subagent_types=aggregate_by_subagent_type(all_subagent_calls),
         all_subagent_calls=sorted(all_subagent_calls, key=lambda c: c.usage.total, reverse=True),
+        skill_types=skill_aggs,
         total_cost=total_cost,
         total_tokens=total_tokens,
+        baseline_avg_cost=baseline_avg_cost,
         parse_errors=total_parse_errors,
     )
