@@ -274,3 +274,35 @@ async def test_overview_chart_filters_zero_token_models():
     async with app.run_test(size=(120, 40)) as pilot:
         chart = app.query_one("#overview-chart")
         assert chart is not None
+
+
+@pytest.mark.asyncio
+async def test_sessions_heatmap_exists():
+    """Sessions tab should have a heatmap widget instead of scatter plot."""
+    from claude_spend.dashboard import SpendApp
+    from textual_plotext import PlotextPlot
+
+    data = _make_test_data()
+    app = SpendApp(data, "Last 7 days")
+    async with app.run_test(size=(120, 40)) as pilot:
+        heatmap = app.query_one("#sessions-heatmap", PlotextPlot)
+        assert heatmap is not None
+
+        # Old scatter widget should not exist
+        scatter_widgets = app.query("#sessions-scatter")
+        assert len(scatter_widgets) == 0
+
+
+@pytest.mark.asyncio
+async def test_heatmap_frame_duck_type():
+    """_HeatmapFrame should satisfy the minimal DataFrame interface for plotext."""
+    from claude_spend.dashboard import _HeatmapFrame
+
+    grid = [[1, 2], [3, 4]]
+    frame = _HeatmapFrame(grid, ["r1", "r2"], ["c1", "c2"])
+    assert frame.index.tolist() == ["r1", "r2"]
+    assert frame.columns.tolist() == ["c1", "c2"]
+    assert frame.values.tolist() == [[1, 2], [3, 4]]
+    assert len(frame.index) == 2
+    assert len(frame.columns) == 2
+    assert list(frame.index) == ["r1", "r2"]

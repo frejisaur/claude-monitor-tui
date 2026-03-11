@@ -56,6 +56,33 @@ def _fmt_cost_delta(delta: float) -> Text:
     return Text(f"-${abs(delta):.2f}", style=color)
 
 
+class _HeatmapFrame:
+    """Minimal DataFrame-like object for plotext.heatmap() (avoids pandas dependency)."""
+    class _Labels:
+        def __init__(self, labels):
+            self._labels = labels
+        def tolist(self):
+            return self._labels
+        def __len__(self):
+            return len(self._labels)
+        def __iter__(self):
+            return iter(self._labels)
+
+    class _Values:
+        def __init__(self, grid):
+            self._grid = grid
+        def tolist(self):
+            return self._grid
+
+    def __init__(self, grid, row_labels, col_labels):
+        self.index = self._Labels(row_labels)
+        self.columns = self._Labels(col_labels)
+        self.values = self._Values(grid)
+
+    def __repr__(self):
+        return ""
+
+
 class BigNumber(Static):
     """A large metric display widget."""
 
@@ -145,7 +172,7 @@ class SpendApp(App):
                     yield BigNumber("Avg Cost", _fmt_cost(avg_cost))
                     yield BigNumber("Avg Cache Hit", f"{avg_cache * 100:.0f}%")
                     yield BigNumber("Avg Skills/Session", f"{avg_skills:.1f}")
-                yield PlotextPlot(id="sessions-scatter")
+                yield PlotextPlot(id="sessions-heatmap")
                 yield DataTable(id="sessions-table")
                 yield Static(id="session-detail")
 
@@ -193,7 +220,7 @@ class SpendApp(App):
         self.title = f"Claude Spend — {self.days_label}"
         if self.data.sessions:
             self._populate_sessions_table()
-            self._populate_sessions_scatter()
+            self._populate_sessions_heatmap()
             self._populate_projects_table()
             self._populate_models_table()
             self._populate_subagents_table()
@@ -223,45 +250,28 @@ class SpendApp(App):
                 key=str(i),
             )
 
-    def _populate_sessions_scatter(self) -> None:
+    def _populate_sessions_heatmap(self) -> None:
         if not self.data.sessions:
             return
-        plt = self.query_one("#sessions-scatter", PlotextPlot).plt
-        plt.title("Cost vs Duration (color = cache efficiency)")
+        plt = self.query_one("#sessions-heatmap", PlotextPlot).plt
+        plt.title("Session Density: Duration \u00d7 Cost  (brighter = more sessions)")
         plt.theme("dark")
 
-        buckets = {"red": ([], []), "orange+": ([], []), "green": ([], [])}
+        dur_labels = ["0-15m", "15-30m", "30-60m", "1-2h", "2-5h", "5h+"]
+        cost_labels = ["$0-5", "$5-15", "$15-30", "$30-60", "$60-100", "$100+"]
+        dur_edges = [0, 15, 30, 60, 120, 300, float("inf")]
+        cost_edges = [0, 5, 15, 30, 60, 100, float("inf")]
+
+        grid = [[0] * len(dur_labels) for _ in range(len(cost_labels))]
         for s in self.data.sessions:
             dur = s.duration_minutes
             cost = s.estimated_cost
-            r = s.cache_hit_ratio
-            if r < 0.50:
-                buckets["red"][0].append(dur)
-                buckets["red"][1].append(cost)
-            elif r < 0.75:
-                buckets["orange+"][0].append(dur)
-                buckets["orange+"][1].append(cost)
-            else:
-                buckets["green"][0].append(dur)
-                buckets["green"][1].append(cost)
+            col = next((i for i in range(len(dur_edges) - 1) if dur_edges[i] <= dur < dur_edges[i + 1]), len(dur_labels) - 1)
+            row = next((i for i in range(len(cost_edges) - 1) if cost_edges[i] <= cost < cost_edges[i + 1]), len(cost_labels) - 1)
+            grid[row][col] += 1
 
-        labels = {"red": "Low cache (<50%)", "orange+": "Mid (50-75%)", "green": "High cache (>75%)"}
-        for color, (xs, ys) in buckets.items():
-            if xs:
-                plt.scatter(xs, ys, color=color, label=labels[color], marker="dot")
-
-        plt.xlabel("Duration (min)")
-        plt.ylabel("Cost ($)")
-        max_cost = max((s.estimated_cost for s in self.data.sessions), default=0)
-        if max_cost > 0:
-            import math
-            num_ticks = 5
-            step = max_cost / num_ticks
-            magnitude = 10 ** math.floor(math.log10(step)) if step > 0 else 1
-            step = math.ceil(step / magnitude) * magnitude
-            ticks = [i * step for i in range(num_ticks + 1)]
-            labels_list = [_fmt_cost(t) for t in ticks]
-            plt.yticks(ticks, labels_list)
+        frame = _HeatmapFrame(grid, cost_labels, dur_labels)
+        plt.heatmap(frame)
 
     def _populate_projects_table(self) -> None:
         table = self.query_one("#projects-table", DataTable)
