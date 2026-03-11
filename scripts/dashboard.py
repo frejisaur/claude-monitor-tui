@@ -12,8 +12,9 @@ from textual.containers import Horizontal
 from textual.widgets import (
     Header, Footer, Static, Label, DataTable, TabbedContent, TabPane, Sparkline,
 )
+from textual_plotext import PlotextPlot
 
-from data import load_all, DashboardData, calculate_cost, TokenUsage
+from data import load_all, DashboardData, calculate_cost, TokenUsage, PRICING, FALLBACK_MODEL
 
 
 def _fmt_tokens(n: int) -> str:
@@ -67,6 +68,10 @@ class SpendApp(App):
         text-align: center;
         margin: 10 0;
     }
+    PlotextPlot {
+        height: 15;
+        margin: 0 1;
+    }
     """
 
     BINDINGS = [
@@ -105,6 +110,8 @@ class SpendApp(App):
                     yield Label(f"Daily Token Usage ({self.days_label})")
                     yield Sparkline(data=daily_totals, summary_function=max, id="overview-sparkline")
 
+                yield PlotextPlot(id="overview-chart")
+
             with TabPane("Sessions", id="tab-sessions"):
                 yield DataTable(id="sessions-table")
 
@@ -112,12 +119,15 @@ class SpendApp(App):
                 yield DataTable(id="projects-table")
 
             with TabPane("Models", id="tab-models"):
+                yield PlotextPlot(id="models-chart")
                 yield DataTable(id="models-table")
 
             with TabPane("Subagents", id="tab-subagents"):
+                yield PlotextPlot(id="subagents-chart")
                 yield DataTable(id="subagents-table")
 
             with TabPane("Costs", id="tab-costs"):
+                yield PlotextPlot(id="costs-chart")
                 yield DataTable(id="costs-table")
 
         if self.data.parse_errors > 0:
@@ -132,6 +142,10 @@ class SpendApp(App):
             self._populate_models_table()
             self._populate_subagents_table()
             self._populate_costs_table()
+            self._populate_overview_chart()
+            self._populate_models_chart()
+            self._populate_subagents_chart()
+            self._populate_costs_chart()
 
     def _populate_sessions_table(self) -> None:
         table = self.query_one("#sessions-table", DataTable)
@@ -191,12 +205,70 @@ class SpendApp(App):
                 _fmt_cost(a.estimated_cost),
             )
 
+    def _populate_overview_chart(self) -> None:
+        if not self.data.daily:
+            return
+        plt = self.query_one("#overview-chart", PlotextPlot).plt
+        plt.title("Daily Token Usage")
+        plt.theme("dark")
+
+        dates = [d.date[5:] for d in self.data.daily]  # MM-DD
+        models = sorted({m for d in self.data.daily for m in d.usage_by_model})
+        colors = ["red", "blue", "green", "yellow", "cyan"]
+
+        for i, model in enumerate(models):
+            values = [
+                d.usage_by_model.get(model, TokenUsage()).total
+                for d in self.data.daily
+            ]
+            short_name = model.split("-")[1] if "-" in model else model
+            plt.bar(dates, values, label=short_name, color=colors[i % len(colors)])
+
+    def _populate_models_chart(self) -> None:
+        if not self.data.models:
+            return
+        plt = self.query_one("#models-chart", PlotextPlot).plt
+        plt.title("Cost by Model")
+        plt.theme("dark")
+
+        names = [m.model.split("-")[1] if "-" in m.model else m.model for m in self.data.models]
+        costs = [m.estimated_cost for m in self.data.models]
+        plt.bar(names, costs, color="blue")
+
+    def _populate_subagents_chart(self) -> None:
+        if not self.data.subagent_types:
+            return
+        plt = self.query_one("#subagents-chart", PlotextPlot).plt
+        plt.title("Token Usage by Subagent Type")
+        plt.theme("dark")
+
+        types = [a.subagent_type for a in self.data.subagent_types]
+        tokens = [a.total_usage.total for a in self.data.subagent_types]
+        plt.bar(types, tokens, color="green")
+
+    def _populate_costs_chart(self) -> None:
+        if not self.data.daily:
+            return
+        plt = self.query_one("#costs-chart", PlotextPlot).plt
+        plt.title("Daily Cost by Token Type")
+        plt.theme("dark")
+
+        dates = [d.date[5:] for d in self.data.daily]
+        colors = ["red", "orange+", "yellow", "green"]
+        labels = ["Input", "Output", "Cache Write", "Cache Read"]
+
+        for i, (label, attr) in enumerate(zip(labels, ["input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens"])):
+            values = []
+            for d in self.data.daily:
+                total = sum(getattr(u, attr) for u in d.usage_by_model.values())
+                values.append(total)
+            plt.bar(dates, values, label=label, color=colors[i])
+
     def _populate_costs_table(self) -> None:
         table = self.query_one("#costs-table", DataTable)
         table.cursor_type = "row"
         table.add_columns("Model", "Input Cost", "Output Cost", "Cache Write Cost", "Cache Read Cost", "Total")
         for m in self.data.models:
-            from data import PRICING, FALLBACK_MODEL
             prices = PRICING.get(m.model, PRICING[FALLBACK_MODEL])
             ic = (m.total_usage.input_tokens / 1_000_000) * prices["input"]
             oc = (m.total_usage.output_tokens / 1_000_000) * prices["output"]
