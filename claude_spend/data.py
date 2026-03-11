@@ -310,6 +310,50 @@ class SubagentTypeAggregate:
     estimated_cost: float = 0.0
 
 
+@dataclass
+class SkillAggregate:
+    skill_name: str = ""
+    invocation_count: int = 0
+    session_ids: list[str] = field(default_factory=list)
+    avg_session_cost: float = 0.0
+    cost_delta: float = 0.0
+    avg_cache_hit_ratio: float = 0.0
+    avg_cache_rw_ratio: float = 0.0
+    avg_duration_minutes: int = 0
+    avg_turn_count: int = 0
+
+
+def aggregate_by_skill(sessions: list[SessionSummary], baseline_avg_cost: float) -> list[SkillAggregate]:
+    by_skill: dict[str, list[SessionSummary]] = {}
+    for s in sessions:
+        for skill in s.skill_invocations:
+            if skill not in by_skill:
+                by_skill[skill] = []
+            by_skill[skill].append(s)
+
+    results = []
+    for skill_name, skill_sessions in by_skill.items():
+        n = len(skill_sessions)
+        avg_cost = sum(s.estimated_cost for s in skill_sessions) / n
+        avg_chr = sum(s.cache_hit_ratio for s in skill_sessions) / n
+        avg_crw = sum(s.cache_rw_ratio for s in skill_sessions) / n
+        avg_dur = sum(s.duration_minutes for s in skill_sessions) // n
+        avg_turns = sum(s.turn_count for s in skill_sessions) // n
+        results.append(SkillAggregate(
+            skill_name=skill_name,
+            invocation_count=n,
+            session_ids=[s.session_id for s in skill_sessions],
+            avg_session_cost=avg_cost,
+            cost_delta=avg_cost - baseline_avg_cost,
+            avg_cache_hit_ratio=avg_chr,
+            avg_cache_rw_ratio=avg_crw,
+            avg_duration_minutes=avg_dur,
+            avg_turn_count=avg_turns,
+        ))
+
+    return sorted(results, key=lambda a: a.cost_delta, reverse=True)
+
+
 def aggregate_by_day(sessions: list[SessionSummary]) -> list[DailyAggregate]:
     by_day: dict[str, DailyAggregate] = {}
     for s in sessions:

@@ -110,3 +110,64 @@ def test_session_summary_cache_ratios_zero_tokens():
     )
     assert s.cache_hit_ratio == 0.0
     assert s.cache_rw_ratio == 0.0
+
+
+def test_aggregate_by_skill_basic():
+    from claude_spend.data import SessionSummary, TokenUsage, aggregate_by_skill
+    sessions = [
+        SessionSummary(
+            session_id="s1",
+            skill_invocations=["brainstorming", "execute-plan"],
+            estimated_cost=60.0,
+            usage_by_model={"claude-opus-4-6": TokenUsage(
+                input_tokens=1000, output_tokens=500,
+                cache_write_tokens=200, cache_read_tokens=800,
+            )},
+            duration_minutes=120,
+            turn_count=30,
+        ),
+        SessionSummary(
+            session_id="s2",
+            skill_invocations=["brainstorming"],
+            estimated_cost=40.0,
+            usage_by_model={"claude-opus-4-6": TokenUsage(
+                input_tokens=1000, output_tokens=500,
+                cache_write_tokens=100, cache_read_tokens=900,
+            )},
+            duration_minutes=60,
+            turn_count=15,
+        ),
+        SessionSummary(
+            session_id="s3",
+            skill_invocations=[],
+            estimated_cost=25.0,
+            usage_by_model={"claude-opus-4-6": TokenUsage(
+                input_tokens=500, output_tokens=250,
+                cache_write_tokens=50, cache_read_tokens=400,
+            )},
+            duration_minutes=30,
+            turn_count=8,
+        ),
+    ]
+    baseline = 25.0  # only s3 has no skills
+    aggs = aggregate_by_skill(sessions, baseline)
+
+    # brainstorming appears in s1 and s2
+    brain = next(a for a in aggs if a.skill_name == "brainstorming")
+    assert brain.invocation_count == 2
+    assert abs(brain.avg_session_cost - 50.0) < 0.01  # (60+40)/2
+    assert abs(brain.cost_delta - 25.0) < 0.01  # 50 - 25
+
+    # execute-plan appears in s1 only
+    ep = next(a for a in aggs if a.skill_name == "execute-plan")
+    assert ep.invocation_count == 1
+    assert abs(ep.avg_session_cost - 60.0) < 0.01
+
+    # sorted by cost_delta descending
+    assert aggs[0].cost_delta >= aggs[-1].cost_delta
+
+
+def test_aggregate_by_skill_empty():
+    from claude_spend.data import aggregate_by_skill
+    aggs = aggregate_by_skill([], 0.0)
+    assert aggs == []
