@@ -261,6 +261,17 @@ class SessionSummary:
             result = result + u
         return result
 
+    @property
+    def cache_hit_ratio(self) -> float:
+        u = self.total_usage
+        denom = u.cache_read_tokens + u.cache_write_tokens + u.input_tokens
+        return u.cache_read_tokens / denom if denom > 0 else 0.0
+
+    @property
+    def cache_rw_ratio(self) -> float:
+        u = self.total_usage
+        return u.cache_read_tokens / max(1, u.cache_write_tokens) if u.cache_read_tokens > 0 else 0.0
+
 
 @dataclass
 class DailyAggregate:

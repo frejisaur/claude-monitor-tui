@@ -77,3 +77,36 @@ def test_session_summary_sortable_with_session_meta():
     ss = SessionSummary()
     sm = SessionMeta()
     assert ss.start_time <= sm.start_time or ss.start_time >= sm.start_time
+
+
+def test_session_summary_cache_hit_ratio():
+    from claude_spend.data import SessionSummary, TokenUsage
+    s = SessionSummary(
+        usage_by_model={"claude-opus-4-6": TokenUsage(
+            input_tokens=1000, output_tokens=500,
+            cache_write_tokens=200, cache_read_tokens=800,
+        )},
+    )
+    # cache_hit_ratio = cache_read / (cache_read + cache_write + input) = 800 / 2000 = 0.4
+    assert abs(s.cache_hit_ratio - 0.4) < 0.01
+
+
+def test_session_summary_cache_rw_ratio():
+    from claude_spend.data import SessionSummary, TokenUsage
+    s = SessionSummary(
+        usage_by_model={"claude-opus-4-6": TokenUsage(
+            input_tokens=1000, output_tokens=500,
+            cache_write_tokens=200, cache_read_tokens=800,
+        )},
+    )
+    # cache_rw_ratio = cache_read / max(1, cache_write) = 800 / 200 = 4.0
+    assert abs(s.cache_rw_ratio - 4.0) < 0.01
+
+
+def test_session_summary_cache_ratios_zero_tokens():
+    from claude_spend.data import SessionSummary, TokenUsage
+    s = SessionSummary(
+        usage_by_model={"claude-opus-4-6": TokenUsage()},
+    )
+    assert s.cache_hit_ratio == 0.0
+    assert s.cache_rw_ratio == 0.0
