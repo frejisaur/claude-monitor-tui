@@ -66,7 +66,7 @@ async def test_app_mounts_with_data():
     app = SpendApp(_make_test_data(), "Last 7 days")
     async with app.run_test(size=(120, 40)) as pilot:
         big_numbers = app.query("BigNumber")
-        assert len(big_numbers) == 3
+        assert len(big_numbers) == 8  # 3 overview + 5 sessions
 
         sessions_table = app.query_one("#sessions-table", DataTable)
         assert sessions_table.row_count == 3

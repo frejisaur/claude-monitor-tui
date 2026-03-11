@@ -87,6 +87,17 @@ class SpendApp(App):
         height: 15;
         margin: 0 1;
     }
+    #sessions-numbers {
+        height: auto;
+        max-height: 7;
+    }
+    #session-detail {
+        display: none;
+        max-height: 15;
+        border: tall $primary;
+        padding: 1;
+        margin: 0 1;
+    }
     """
 
     BINDINGS = [
@@ -119,7 +130,19 @@ class SpendApp(App):
                 yield PlotextPlot(id="overview-chart")
 
             with TabPane("Sessions", id="tab-sessions"):
+                with Horizontal(id="sessions-numbers"):
+                    n = len(self.data.sessions)
+                    avg_cost = self.data.total_cost / max(1, n)
+                    avg_cache = sum(s.cache_hit_ratio for s in self.data.sessions) / max(1, n)
+                    avg_skills = sum(len(s.skill_invocations) for s in self.data.sessions) / max(1, n)
+                    yield BigNumber("Sessions", str(n))
+                    yield BigNumber("Total Cost", _fmt_cost(self.data.total_cost))
+                    yield BigNumber("Avg Cost", _fmt_cost(avg_cost))
+                    yield BigNumber("Avg Cache Hit", f"{avg_cache * 100:.0f}%")
+                    yield BigNumber("Avg Skills/Session", f"{avg_skills:.1f}")
+                yield PlotextPlot(id="sessions-scatter")
                 yield DataTable(id="sessions-table")
+                yield Static(id="session-detail")
 
             with TabPane("Projects", id="tab-projects"):
                 yield DataTable(id="projects-table")
@@ -144,6 +167,7 @@ class SpendApp(App):
         self.title = f"Claude Spend — {self.days_label}"
         if self.data.sessions:
             self._populate_sessions_table()
+            self._populate_sessions_scatter()
             self._populate_projects_table()
             self._populate_models_table()
             self._populate_subagents_table()
@@ -156,8 +180,9 @@ class SpendApp(App):
     def _populate_sessions_table(self) -> None:
         table = self.query_one("#sessions-table", DataTable)
         table.cursor_type = "row"
-        table.add_columns("Date", "Project", "First Prompt", "Duration", "Tokens", "Cost")
-        for s in sorted(self.data.sessions, key=lambda x: x.start_time, reverse=True):
+        table.add_columns("Date", "Project", "First Prompt", "Duration", "Tokens", "Cost", "Skills", "Cache%")
+        self._sessions_ordered = sorted(self.data.sessions, key=lambda x: x.start_time, reverse=True)
+        for s in self._sessions_ordered:
             table.add_row(
                 s.start_time.strftime("%Y-%m-%d %H:%M"),
                 s.project_name[:25],
@@ -165,7 +190,49 @@ class SpendApp(App):
                 _fmt_duration(s.duration_minutes),
                 _fmt_tokens(s.total_usage.total),
                 _fmt_cost(s.estimated_cost),
+                str(len(s.skill_invocations)),
+                _fmt_cache_pct(s.cache_hit_ratio),
             )
+
+    def _populate_sessions_scatter(self) -> None:
+        if not self.data.sessions:
+            return
+        plt = self.query_one("#sessions-scatter", PlotextPlot).plt
+        plt.title("Cost vs Duration (color = cache efficiency)")
+        plt.theme("dark")
+
+        buckets = {"red": ([], []), "orange+": ([], []), "green": ([], [])}
+        for s in self.data.sessions:
+            dur = s.duration_minutes
+            cost = s.estimated_cost
+            r = s.cache_hit_ratio
+            if r < 0.50:
+                buckets["red"][0].append(dur)
+                buckets["red"][1].append(cost)
+            elif r < 0.75:
+                buckets["orange+"][0].append(dur)
+                buckets["orange+"][1].append(cost)
+            else:
+                buckets["green"][0].append(dur)
+                buckets["green"][1].append(cost)
+
+        labels = {"red": "Low cache (<50%)", "orange+": "Mid (50-75%)", "green": "High cache (>75%)"}
+        for color, (xs, ys) in buckets.items():
+            if xs:
+                plt.scatter(xs, ys, color=color, label=labels[color], marker="dot")
+
+        plt.xlabel("Duration (min)")
+        plt.ylabel("Cost ($)")
+        max_cost = max((s.estimated_cost for s in self.data.sessions), default=0)
+        if max_cost > 0:
+            import math
+            num_ticks = 5
+            step = max_cost / num_ticks
+            magnitude = 10 ** math.floor(math.log10(step)) if step > 0 else 1
+            step = math.ceil(step / magnitude) * magnitude
+            ticks = [i * step for i in range(num_ticks + 1)]
+            labels_list = [_fmt_cost(t) for t in ticks]
+            plt.yticks(ticks, labels_list)
 
     def _populate_projects_table(self) -> None:
         table = self.query_one("#projects-table", DataTable)
