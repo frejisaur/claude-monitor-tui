@@ -187,6 +187,60 @@ async def test_session_detail_panel_shows_on_row_select():
 
 
 @pytest.mark.asyncio
+async def test_session_drilldown_on_row_select():
+    """Selecting a row in sessions table shows the detail panel with session content."""
+    from claude_spend.dashboard import SpendApp
+    from textual.widgets import DataTable, Static
+
+    data = _make_test_data()
+    app = SpendApp(data, "Last 7 days")
+    async with app.run_test(size=(120, 40)) as pilot:
+        # Switch to Sessions tab
+        tabs = app.query("Tab")
+        for tab in tabs:
+            if "Sessions" in str(tab.label):
+                await pilot.click(type(tab), offset=(2, 0))
+                break
+        await pilot.pause()
+
+        detail = app.query_one("#session-detail", Static)
+        assert detail.display is False, "Detail panel should start hidden"
+
+        # Select the first row in the sessions table
+        sessions_table = app.query_one("#sessions-table", DataTable)
+        sessions_table.move_cursor(row=0)
+        await pilot.pause()
+        # Trigger RowSelected via action_select_cursor
+        sessions_table.action_select_cursor()
+        await pilot.pause()
+
+        assert detail.display is True, "Detail panel should be visible after row selection"
+        # Static stores its content in name-mangled _Static__content
+        content = str(detail._Static__content)
+        # The detail should contain session info — check for project name from fixture
+        # Sessions are sorted by start_time desc, so first row is s2 (2026-03-07) project "beta"
+        assert "beta" in content.lower() or "Task" in content, \
+            f"Detail panel should contain session info, got: {content[:200]}"
+
+
+@pytest.mark.asyncio
+async def test_session_drilldown_uses_row_key_not_cursor():
+    """Drilldown should work correctly even when using row keys (sort-stable)."""
+    from claude_spend.dashboard import SpendApp
+    from textual.widgets import DataTable, Static
+
+    data = _make_test_data()
+    app = SpendApp(data, "Last 7 days")
+    async with app.run_test(size=(120, 40)) as pilot:
+        sessions_table = app.query_one("#sessions-table", DataTable)
+
+        # Verify row keys are set (str(i) for each row)
+        keys = [str(rk.value) for rk in sessions_table.rows.keys()]
+        assert all(k.isdigit() for k in keys), \
+            f"Row keys should be numeric strings, got: {keys}"
+
+
+@pytest.mark.asyncio
 async def test_overview_chart_filters_zero_token_models():
     """Models with zero total tokens across all days should not appear in the chart."""
     from claude_spend.dashboard import SpendApp

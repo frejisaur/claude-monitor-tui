@@ -210,7 +210,7 @@ class SpendApp(App):
         table.cursor_type = "row"
         table.add_columns("Date", "Project", "First Prompt", "Duration", "Tokens", "Cost", "Skills", "Cache%")
         self._sessions_ordered = sorted(self.data.sessions, key=lambda x: x.start_time, reverse=True)
-        for s in self._sessions_ordered:
+        for i, s in enumerate(self._sessions_ordered):
             table.add_row(
                 s.start_time.strftime("%Y-%m-%d %H:%M"),
                 s.project_name[:25],
@@ -220,6 +220,7 @@ class SpendApp(App):
                 _fmt_cost(s.estimated_cost),
                 str(len(s.skill_invocations)),
                 _fmt_cache_pct(s.cache_hit_ratio),
+                key=str(i),
             )
 
     def _populate_sessions_scatter(self) -> None:
@@ -501,7 +502,10 @@ class SpendApp(App):
         detail = self.query_one("#session-detail", Static)
         if not hasattr(self, "_sessions_ordered"):
             return
-        idx = event.cursor_row
+        try:
+            idx = int(event.row_key.value)
+        except (TypeError, ValueError):
+            return
         if idx < 0 or idx >= len(self._sessions_ordered):
             return
 
