@@ -87,14 +87,23 @@ class ConversationData:
 
 In `parse_conversation_jsonl`, inside the `for msg in lines:` loop, add a branch for plain user messages. After the existing `elif msg_type == "user":` block (which handles tool results), we need to also count non-tool-result user messages. Restructure the user handling:
 
-In the existing `elif msg_type == "user":` block, add turn counting before the tool result check:
+Restructure the existing `elif msg_type == "user":` block into two branches. The existing code starts with:
 
 ```python
 elif msg_type == "user":
-    # Count plain user messages (not tool results) as turns
     result = msg.get("toolUseResult")
     if not isinstance(result, dict) or "totalTokens" not in result:
-        # This is a plain user message, count as a turn
+        continue
+    # ... tool result handling ...
+```
+
+Replace it with:
+
+```python
+elif msg_type == "user":
+    result = msg.get("toolUseResult")
+    if not isinstance(result, dict) or "totalTokens" not in result:
+        # Plain user message (not a tool result) — count as a turn
         user_msg = msg.get("message", {})
         if isinstance(user_msg, dict):
             content = user_msg.get("content", [])
@@ -106,7 +115,16 @@ elif msg_type == "user":
                 data.turn_count += 1
         continue
 
-    # Rest of existing tool result handling...
+    # Existing tool result handling (unchanged from here down)
+    tool_use_id = None
+    user_msg = msg.get("message", {})
+    for block in user_msg.get("content", []) if isinstance(user_msg, dict) else []:
+        if isinstance(block, dict) and block.get("type") == "tool_result":
+            tool_use_id = block.get("tool_use_id")
+            break
+
+    if tool_use_id and tool_use_id in task_calls:
+        # ... rest unchanged ...
 ```
 
 - [ ] **Step 6: Run test to verify it passes**
@@ -459,20 +477,22 @@ def _fmt_cache_rw(ratio: float) -> Text:
 
 
 def _fmt_cost_delta(delta: float) -> Text:
-    sign = "+" if delta >= 0 else ""
     color = "green" if delta < 0 else "dark_orange" if delta < 15 else "red"
-    return Text(f"{sign}${delta:.2f}", style=color)
+    if delta >= 0:
+        return Text(f"+${delta:.2f}", style=color)
+    return Text(f"-${abs(delta):.2f}", style=color)
 ```
 
-Add new entries to `_NUMERIC_COLUMNS`:
+Add new entries to `_NUMERIC_COLUMNS` (note: `_parse_pct_str` and `_parse_int_str` already exist in dashboard.py):
 
 ```python
-"Cost Delta": lambda s: float(str(s).lstrip("+").lstrip("$").lstrip("-$")) * (-1 if str(s).startswith("-") else 1),
 "Cache Hit": _parse_pct_str,
 "Cache R:W": lambda s: float(str(s).split(":")[0]) if ":" in str(s) else 0.0,
 "Avg Turns": _parse_int_str,
 "Cache%": _parse_pct_str,
 ```
+
+Note: Cost Delta parser is deferred to Task 10 (Chunk 4) where the proper `_parse_cost_delta_str` function is defined.
 
 - [ ] **Step 2: Run existing tests to verify nothing breaks**
 
@@ -594,7 +614,7 @@ Add `self._populate_sessions_scatter()` to the `on_mount` method, alongside the 
 - [ ] **Step 6: Run tests**
 
 Run: `pytest -v`
-Expected: ALL PASS (test_app_mounts_with_data needs update — BigNumber count changes from 3 to 8)
+Expected: FAIL — `test_app_mounts_with_data` will fail because BigNumber count changed from 3 to 8 (3 overview + 5 sessions)
 
 - [ ] **Step 7: Fix test_app_mounts_with_data**
 
@@ -695,7 +715,7 @@ def _build_session_detail(self, session: "SessionSummary") -> str:
     return "\n".join(lines)
 ```
 
-- [ ] **Step 2: Add the event handler**
+- [ ] **Step 2: Add the event handler with toggle-off on re-select**
 
 ```python
 def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -707,10 +727,18 @@ def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
     idx = event.cursor_row
     if idx < 0 or idx >= len(self._sessions_ordered):
         return
+
+    # Toggle off if re-selecting the same row
+    if detail.display and getattr(self, "_detail_row_idx", -1) == idx:
+        detail.display = False
+        self._detail_row_idx = -1
+        return
+
     session = self._sessions_ordered[idx]
     content = self._build_session_detail(session)
     detail.update(content)
     detail.display = True
+    self._detail_row_idx = idx
 ```
 
 - [ ] **Step 3: Add escape binding to hide detail**
@@ -883,13 +911,14 @@ from claude_spend.data import (
 )
 ```
 
-In the session creation loop, add skills to the first two sessions:
+In the session creation loop, add skills and turn_count to sessions:
 
 ```python
 skills = [["brainstorming", "execute-plan"], ["brainstorming"], []][i]
+turns = [30, 15, 8][i]
 ```
 
-Then pass `skill_invocations=skills` to `SessionSummary(...)`.
+Then pass `skill_invocations=skills, turn_count=turns` to `SessionSummary(...)`.
 
 After building sessions, compute:
 
@@ -925,6 +954,8 @@ async def test_skills_tab_renders():
 
 - [ ] **Step 8: Update BigNumber count assertion**
 
+The current codebase has BigNumbers only in Overview (3). After Sessions revamp (Task 7) that becomes 8. Adding Skills tab adds 5 more = 13. No other tabs have BigNumbers.
+
 ```python
 big_numbers = app.query("BigNumber")
 assert len(big_numbers) == 13  # 3 overview + 5 sessions + 5 skills
@@ -959,17 +990,14 @@ The Cost Delta column contains Rich Text objects, not plain strings. When sortin
 "Cost Delta": lambda s: float(str(s).replace("+", "").replace("$", "")) if str(s).replace("+", "").replace("-", "").replace("$", "").replace(".", "").isdigit() else 0.0,
 ```
 
-Simplify — use a try/except parser:
+Simplify — strip `+`, `$`, `-` and parse:
 
 ```python
 def _parse_cost_delta_str(s: str) -> float:
     try:
-        return float(str(s).lstrip("+").lstrip("$"))
+        return float(str(s).replace("+", "").replace("$", ""))
     except ValueError:
-        try:
-            return float(str(s).lstrip("-").lstrip("$")) * -1
-        except ValueError:
-            return 0.0
+        return 0.0
 ```
 
 Add `"Cost Delta": _parse_cost_delta_str` to `_NUMERIC_COLUMNS`.
