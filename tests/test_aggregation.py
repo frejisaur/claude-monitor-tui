@@ -3,6 +3,7 @@ from scripts.data import (
     TokenUsage, SessionSummary, SubagentCall,
     aggregate_by_day, aggregate_by_project, aggregate_by_model, aggregate_by_subagent_type,
     DailyAggregate, ProjectAggregate, ModelAggregate, SubagentTypeAggregate,
+    load_all, DashboardData,
 )
 from datetime import datetime, timezone
 
@@ -83,3 +84,49 @@ def test_aggregate_by_subagent_type():
     explore = next(a for a in aggs if a.subagent_type == "Explore")
     assert explore.call_count == 2
     assert explore.total_usage.input_tokens == 8000
+
+
+def test_load_all_integrates_meta_and_jsonl(tmp_claude_dir, sample_session_meta, sample_jsonl_messages):
+    # Write session meta
+    meta_dir = tmp_claude_dir / "usage-data" / "session-meta"
+    with open(meta_dir / "abc-123.json", "w") as f:
+        json.dump(sample_session_meta, f)
+
+    # Write JSONL in the right project directory
+    project_encoded = sample_session_meta["project_path"].replace("/", "-")
+    project_dir = tmp_claude_dir / "projects" / project_encoded
+    project_dir.mkdir(parents=True)
+    jsonl_path = project_dir / "abc-123.jsonl"
+    with open(jsonl_path, "w") as f:
+        for msg in sample_jsonl_messages:
+            f.write(json.dumps(msg) + "\n")
+
+    data = load_all(str(tmp_claude_dir), days=None)
+
+    assert len(data.sessions) == 1
+    session = data.sessions[0]
+    assert "claude-opus-4-6" in session.usage_by_model
+    assert len(session.subagent_calls) == 1
+    assert session.estimated_cost > 0
+    assert len(data.daily) >= 1
+    assert len(data.projects) >= 1
+    assert len(data.models) >= 1
+    assert len(data.subagent_types) >= 1
+
+
+def test_load_all_missing_claude_dir():
+    data = load_all("/nonexistent/path", days=30)
+    assert len(data.sessions) == 0
+
+
+def test_load_all_session_without_jsonl_uses_meta_fallback(tmp_claude_dir, sample_session_meta):
+    meta_dir = tmp_claude_dir / "usage-data" / "session-meta"
+    with open(meta_dir / "abc-123.json", "w") as f:
+        json.dump(sample_session_meta, f)
+
+    # No JSONL file — should still produce a session from meta
+    data = load_all(str(tmp_claude_dir), days=None)
+    assert len(data.sessions) == 1
+    session = data.sessions[0]
+    # Fallback uses meta totals with "unknown" model
+    assert session.total_usage.input_tokens == sample_session_meta["input_tokens"]

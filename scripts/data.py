@@ -351,3 +351,101 @@ def aggregate_by_subagent_type(calls: list[SubagentCall]) -> list[SubagentTypeAg
             agg.avg_tokens_per_call = agg.total_usage.total // agg.call_count
 
     return sorted(by_type.values(), key=lambda a: a.estimated_cost, reverse=True)
+
+
+@dataclass
+class DashboardData:
+    sessions: list[SessionSummary] = field(default_factory=list)
+    daily: list[DailyAggregate] = field(default_factory=list)
+    projects: list[ProjectAggregate] = field(default_factory=list)
+    models: list[ModelAggregate] = field(default_factory=list)
+    subagent_types: list[SubagentTypeAggregate] = field(default_factory=list)
+    all_subagent_calls: list[SubagentCall] = field(default_factory=list)
+    total_cost: float = 0.0
+    total_tokens: int = 0
+    parse_errors: int = 0
+
+
+def _find_jsonl(claude_dir: str, meta: SessionMeta) -> str | None:
+    """Find the conversation JSONL for a session across project directories."""
+    projects_dir = os.path.join(claude_dir, "projects")
+    if not os.path.isdir(projects_dir):
+        return None
+
+    project_encoded = meta.project_path.replace("/", "-")
+    jsonl_path = os.path.join(projects_dir, project_encoded, f"{meta.session_id}.jsonl")
+    if os.path.isfile(jsonl_path):
+        return jsonl_path
+    return None
+
+
+def load_all(claude_dir: str, days: int | None = 30) -> DashboardData:
+    """Load all data and produce aggregated dashboard data."""
+    if not os.path.isdir(claude_dir):
+        return DashboardData()
+
+    metas = load_session_metas(claude_dir, days=days)
+    sessions: list[SessionSummary] = []
+    all_subagent_calls: list[SubagentCall] = []
+    total_parse_errors = 0
+
+    for meta in metas:
+        jsonl_path = _find_jsonl(claude_dir, meta)
+
+        if jsonl_path:
+            conv = parse_conversation_jsonl(jsonl_path)
+            total_parse_errors += conv.parse_errors
+
+            cost = sum(calculate_cost(u, m) for m, u in conv.usage_by_model.items())
+
+            for call in conv.subagent_calls:
+                call.session_id = meta.session_id
+
+            session = SessionSummary(
+                session_id=meta.session_id,
+                project_path=meta.project_path,
+                project_name=meta.project_name,
+                start_time=meta.start_time,
+                duration_minutes=meta.duration_minutes,
+                first_prompt=meta.first_prompt,
+                usage_by_model=conv.usage_by_model,
+                tool_counts=meta.tool_counts,
+                subagent_calls=conv.subagent_calls,
+                skill_invocations=conv.skill_invocations,
+                estimated_cost=cost,
+            )
+        else:
+            fallback_usage = TokenUsage(
+                input_tokens=meta.input_tokens,
+                output_tokens=meta.output_tokens,
+            )
+            cost = calculate_cost(fallback_usage, FALLBACK_MODEL)
+            session = SessionSummary(
+                session_id=meta.session_id,
+                project_path=meta.project_path,
+                project_name=meta.project_name,
+                start_time=meta.start_time,
+                duration_minutes=meta.duration_minutes,
+                first_prompt=meta.first_prompt,
+                usage_by_model={"unknown": fallback_usage},
+                tool_counts=meta.tool_counts,
+                estimated_cost=cost,
+            )
+
+        sessions.append(session)
+        all_subagent_calls.extend(session.subagent_calls)
+
+    total_cost = sum(s.estimated_cost for s in sessions)
+    total_tokens = sum(s.total_usage.total for s in sessions)
+
+    return DashboardData(
+        sessions=sessions,
+        daily=aggregate_by_day(sessions),
+        projects=aggregate_by_project(sessions),
+        models=aggregate_by_model(sessions),
+        subagent_types=aggregate_by_subagent_type(all_subagent_calls),
+        all_subagent_calls=sorted(all_subagent_calls, key=lambda c: c.usage.total, reverse=True),
+        total_cost=total_cost,
+        total_tokens=total_tokens,
+        parse_errors=total_parse_errors,
+    )
