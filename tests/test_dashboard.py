@@ -163,7 +163,28 @@ async def test_big_number_labels_not_dim():
     content = str(widget.render())
     # Verify labels are present and [dim] is not used in the raw markup
     assert "Total Tokens" in content
-    assert "[dim]" not in widget._Static__content
+    assert "[dim]" not in content
+
+
+@pytest.mark.asyncio
+async def test_big_number_label_visible_in_render():
+    """BigNumber padding=0 allows both value and label to render within height=5/border=tall."""
+    from claude_spend.dashboard import SpendApp
+
+    app = SpendApp(_make_test_data(), "Last 7 days")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        # Grab the first BigNumber widget in the overview numbers row
+        bignums = app.query("BigNumber")
+        assert len(bignums) > 0, "Expected BigNumber widgets to be present"
+        first = bignums.first()
+        # Both value and label lines must fit: content_height = height(5) - border(2) - padding_top_bottom(0+0) = 3
+        # render() returns the markup string with both lines separated by \n
+        content = str(first.render())
+        assert "\n" in content, "BigNumber should contain both value and label lines"
+        value_line, label_line = content.split("\n", 1)
+        assert value_line.strip(), "Value line should not be empty"
+        assert label_line.strip(), "Label line should not be empty"
 
 
 @pytest.mark.asyncio
@@ -215,8 +236,8 @@ async def test_session_drilldown_on_row_select():
         await pilot.pause()
 
         assert detail.display is True, "Detail panel should be visible after row selection"
-        # Static stores its content in name-mangled _Static__content
-        content = str(detail._Static__content)
+        # Use public render() method instead of private attribute
+        content = str(detail.render())
         # The detail should contain session info — check for project name from fixture
         # Sessions are sorted by start_time desc, so first row is s2 (2026-03-07) project "beta"
         assert "beta" in content.lower() or "Task" in content, \

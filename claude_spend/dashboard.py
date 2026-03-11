@@ -67,7 +67,7 @@ class SpendApp(App):
     CSS = """
     BigNumber {
         text-align: center;
-        padding: 1 2;
+        padding: 0 2;
         width: 1fr;
         height: 5;
         border: tall $surface-lighten-2;
