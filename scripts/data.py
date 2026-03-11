@@ -227,3 +227,127 @@ def calculate_cost(usage: TokenUsage, model: str) -> float:
         + (usage.cache_write_tokens / 1_000_000) * prices["cache_write"]
         + (usage.cache_read_tokens / 1_000_000) * prices["cache_read"]
     )
+
+
+@dataclass
+class SessionSummary:
+    session_id: str = ""
+    project_path: str = ""
+    project_name: str = ""
+    start_time: datetime = field(default_factory=lambda: datetime(1970, 1, 1))
+    duration_minutes: int = 0
+    first_prompt: str = ""
+    usage_by_model: dict[str, TokenUsage] = field(default_factory=dict)
+    tool_counts: dict[str, int] = field(default_factory=dict)
+    subagent_calls: list[SubagentCall] = field(default_factory=list)
+    skill_invocations: list[str] = field(default_factory=list)
+    estimated_cost: float = 0.0
+
+    @property
+    def total_usage(self) -> TokenUsage:
+        result = TokenUsage()
+        for u in self.usage_by_model.values():
+            result = result + u
+        return result
+
+
+@dataclass
+class DailyAggregate:
+    date: str = ""
+    usage_by_model: dict[str, TokenUsage] = field(default_factory=dict)
+    session_count: int = 0
+    estimated_cost: float = 0.0
+
+
+@dataclass
+class ProjectAggregate:
+    project_name: str = ""
+    project_path: str = ""
+    session_count: int = 0
+    total_usage: TokenUsage = field(default_factory=TokenUsage)
+    estimated_cost: float = 0.0
+
+
+@dataclass
+class ModelAggregate:
+    model: str = ""
+    total_usage: TokenUsage = field(default_factory=TokenUsage)
+    session_count: int = 0
+    estimated_cost: float = 0.0
+
+
+@dataclass
+class SubagentTypeAggregate:
+    subagent_type: str = ""
+    call_count: int = 0
+    models_used: dict[str, int] = field(default_factory=dict)
+    total_usage: TokenUsage = field(default_factory=TokenUsage)
+    avg_tokens_per_call: int = 0
+    total_duration_ms: int = 0
+    estimated_cost: float = 0.0
+
+
+def aggregate_by_day(sessions: list[SessionSummary]) -> list[DailyAggregate]:
+    by_day: dict[str, DailyAggregate] = {}
+    for s in sessions:
+        date_str = s.start_time.strftime("%Y-%m-%d")
+        if date_str not in by_day:
+            by_day[date_str] = DailyAggregate(date=date_str)
+        agg = by_day[date_str]
+        agg.session_count += 1
+        for model, usage in s.usage_by_model.items():
+            if model in agg.usage_by_model:
+                agg.usage_by_model[model] = agg.usage_by_model[model] + usage
+            else:
+                agg.usage_by_model[model] = TokenUsage(
+                    usage.input_tokens, usage.output_tokens,
+                    usage.cache_write_tokens, usage.cache_read_tokens,
+                )
+        agg.estimated_cost += s.estimated_cost
+    return sorted(by_day.values(), key=lambda d: d.date)
+
+
+def aggregate_by_project(sessions: list[SessionSummary]) -> list[ProjectAggregate]:
+    by_proj: dict[str, ProjectAggregate] = {}
+    for s in sessions:
+        key = s.project_name
+        if key not in by_proj:
+            by_proj[key] = ProjectAggregate(project_name=key, project_path=s.project_path)
+        agg = by_proj[key]
+        agg.session_count += 1
+        agg.total_usage = agg.total_usage + s.total_usage
+        agg.estimated_cost += s.estimated_cost
+    return sorted(by_proj.values(), key=lambda p: p.estimated_cost, reverse=True)
+
+
+def aggregate_by_model(sessions: list[SessionSummary]) -> list[ModelAggregate]:
+    by_model: dict[str, ModelAggregate] = {}
+    for s in sessions:
+        for model, usage in s.usage_by_model.items():
+            if model not in by_model:
+                by_model[model] = ModelAggregate(model=model)
+            agg = by_model[model]
+            agg.total_usage = agg.total_usage + usage
+            agg.session_count += 1
+            agg.estimated_cost += calculate_cost(usage, model)
+    return sorted(by_model.values(), key=lambda m: m.estimated_cost, reverse=True)
+
+
+def aggregate_by_subagent_type(calls: list[SubagentCall]) -> list[SubagentTypeAggregate]:
+    by_type: dict[str, SubagentTypeAggregate] = {}
+    for c in calls:
+        key = c.subagent_type
+        if key not in by_type:
+            by_type[key] = SubagentTypeAggregate(subagent_type=key)
+        agg = by_type[key]
+        agg.call_count += 1
+        agg.total_usage = agg.total_usage + c.usage
+        agg.total_duration_ms += c.duration_ms
+        agg.models_used[c.model] = agg.models_used.get(c.model, 0) + 1
+        agg.estimated_cost += calculate_cost(c.usage, c.model)
+
+    for agg in by_type.values():
+        if agg.call_count > 0:
+            agg.avg_tokens_per_call = agg.total_usage.total // agg.call_count
+
+    return sorted(by_type.values(), key=lambda a: a.estimated_cost, reverse=True)
