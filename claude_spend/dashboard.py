@@ -129,6 +129,11 @@ class SpendApp(App):
         height: auto;
         max-height: 7;
     }
+    .table-help {
+        height: auto;
+        margin: 0 1;
+        padding: 0 1;
+    }
     """
 
     BINDINGS = [
@@ -173,22 +178,27 @@ class SpendApp(App):
                     yield BigNumber("Avg Cache Hit", f"{avg_cache * 100:.0f}%")
                     yield BigNumber("Avg Skills/Session", f"{avg_skills:.1f}")
                 yield PlotextPlot(id="sessions-heatmap")
+                yield Static("[#666666]Cache% = cache read / total input[/#666666]", classes="table-help")
                 yield DataTable(id="sessions-table")
                 yield Static(id="session-detail")
 
             with TabPane("Projects", id="tab-projects"):
+                yield Static("[#666666]Tokens = total across all models[/#666666]", classes="table-help")
                 yield DataTable(id="projects-table")
 
             with TabPane("Models", id="tab-models"):
                 yield PlotextPlot(id="models-chart")
+                yield Static("[#666666]% = share of total cost[/#666666]", classes="table-help")
                 yield DataTable(id="models-table")
 
             with TabPane("Subagents", id="tab-subagents"):
                 yield PlotextPlot(id="subagents-chart")
+                yield Static("[#666666]Avg Tokens = per call[/#666666]", classes="table-help")
                 yield DataTable(id="subagents-table")
 
             with TabPane("Costs", id="tab-costs"):
                 yield PlotextPlot(id="costs-chart")
+                yield Static("[#666666]Cost by token type per model[/#666666]", classes="table-help")
                 yield DataTable(id="costs-table")
 
             with TabPane("Skills", id="tab-skills"):
@@ -210,6 +220,7 @@ class SpendApp(App):
                     yield BigNumber("Avg Cost (no skill)", _fmt_cost(self.data.baseline_avg_cost))
                     yield BigNumber("Avg Cache Hit", f"{avg_skill_cache * 100:.0f}%")
                 yield PlotextPlot(id="skills-chart")
+                yield Static("[#666666]Cost Delta = vs no-skill avg · Cache R:W = read:write ratio[/#666666]", classes="table-help")
                 yield DataTable(id="skills-table")
 
         if self.data.parse_errors > 0:

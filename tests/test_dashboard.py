@@ -145,6 +145,17 @@ async def test_skills_tab_renders():
 
 
 @pytest.mark.asyncio
+async def test_table_help_widgets_exist():
+    """Each data table has a .table-help Static widget above it."""
+    from claude_spend.dashboard import SpendApp
+
+    app = SpendApp(_make_test_data(), "Last 7 days")
+    async with app.run_test(size=(120, 40)) as pilot:
+        help_widgets = app.query(".table-help")
+        assert len(help_widgets) >= 6
+
+
+@pytest.mark.asyncio
 async def test_skills_chart_renders_with_unnamed():
     """Skills chart renders without crash when data includes (unnamed) skills."""
     from claude_spend.dashboard import SpendApp
