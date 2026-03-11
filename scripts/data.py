@@ -100,6 +100,124 @@ def load_session_metas(claude_dir: str, days: int | None = 30) -> list[SessionMe
     return results
 
 
+@dataclass
+class SubagentCall:
+    session_id: str = ""
+    subagent_type: str = ""
+    description: str = ""
+    model: str = "unknown"
+    usage: TokenUsage = field(default_factory=TokenUsage)
+    duration_ms: int = 0
+    tool_use_count: int = 0
+
+
+@dataclass
+class ConversationData:
+    usage_by_model: dict[str, TokenUsage] = field(default_factory=dict)
+    subagent_calls: list[SubagentCall] = field(default_factory=list)
+    skill_invocations: list[str] = field(default_factory=list)
+    parse_errors: int = 0
+
+
+def parse_conversation_jsonl(jsonl_path: str) -> ConversationData:
+    """Parse a conversation JSONL file, extracting per-model usage, subagent calls, and skills."""
+    data = ConversationData()
+
+    if not os.path.isfile(jsonl_path):
+        return data
+
+    task_calls: dict[str, dict] = {}       # tool_use_id -> {subagent_type, description, model_param}
+    subagent_models: dict[str, str] = {}   # parentToolUseID -> model from progress
+
+    lines = []
+    with open(jsonl_path) as f:
+        for line in f:
+            try:
+                msg = json.loads(line)
+                lines.append(msg)
+            except json.JSONDecodeError:
+                data.parse_errors += 1
+
+    for msg in lines:
+        msg_type = msg.get("type")
+
+        if msg_type == "assistant":
+            inner = msg.get("message", {})
+            model = inner.get("model")
+            usage_raw = inner.get("usage", {})
+            if model and usage_raw:
+                usage = TokenUsage(
+                    input_tokens=usage_raw.get("input_tokens", 0),
+                    output_tokens=usage_raw.get("output_tokens", 0),
+                    cache_write_tokens=usage_raw.get("cache_creation_input_tokens", 0),
+                    cache_read_tokens=usage_raw.get("cache_read_input_tokens", 0),
+                )
+                if model in data.usage_by_model:
+                    data.usage_by_model[model] = data.usage_by_model[model] + usage
+                else:
+                    data.usage_by_model[model] = usage
+
+            for block in inner.get("content", []):
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                if block.get("name") == "Task":
+                    inp = block.get("input", {})
+                    task_calls[block["id"]] = {
+                        "subagent_type": inp.get("subagent_type", "unknown"),
+                        "description": inp.get("description", ""),
+                        "model_param": inp.get("model"),
+                    }
+                elif block.get("name") == "Skill":
+                    skill_name = block.get("input", {}).get("skill", "")
+                    if skill_name:
+                        data.skill_invocations.append(skill_name)
+
+        elif msg_type == "progress":
+            parent_id = msg.get("parentToolUseID")
+            if parent_id and parent_id not in subagent_models:
+                inner_data = msg.get("data", {})
+                inner_msg = inner_data.get("message", {})
+                if isinstance(inner_msg, dict):
+                    nested = inner_msg.get("message", {})
+                    if isinstance(nested, dict) and "model" in nested:
+                        subagent_models[parent_id] = nested["model"]
+
+        elif msg_type == "user":
+            result = msg.get("toolUseResult")
+            if not isinstance(result, dict) or "totalTokens" not in result:
+                continue
+
+            tool_use_id = None
+            user_msg = msg.get("message", {})
+            for block in user_msg.get("content", []) if isinstance(user_msg, dict) else []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tool_use_id = block.get("tool_use_id")
+                    break
+
+            if tool_use_id and tool_use_id in task_calls:
+                call_info = task_calls[tool_use_id]
+                usage_raw = result.get("usage", {})
+                model = (
+                    call_info["model_param"]
+                    or subagent_models.get(tool_use_id, "unknown")
+                )
+                data.subagent_calls.append(SubagentCall(
+                    subagent_type=call_info["subagent_type"],
+                    description=call_info["description"],
+                    model=model,
+                    usage=TokenUsage(
+                        input_tokens=usage_raw.get("input_tokens", 0),
+                        output_tokens=usage_raw.get("output_tokens", 0),
+                        cache_write_tokens=usage_raw.get("cache_creation_input_tokens", 0),
+                        cache_read_tokens=usage_raw.get("cache_read_input_tokens", 0),
+                    ),
+                    duration_ms=result.get("totalDurationMs", 0),
+                    tool_use_count=result.get("totalToolUseCount", 0),
+                ))
+
+    return data
+
+
 def calculate_cost(usage: TokenUsage, model: str) -> float:
     """Calculate estimated API cost for a token usage at given model's pricing."""
     prices = PRICING.get(model, PRICING[FALLBACK_MODEL])
