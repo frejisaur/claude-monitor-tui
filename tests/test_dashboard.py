@@ -145,6 +145,26 @@ async def test_big_number_labels_not_dim():
 
 
 @pytest.mark.asyncio
+async def test_session_detail_panel_shows_on_row_select():
+    from claude_spend.dashboard import SpendApp
+    from textual.widgets import DataTable, Static
+
+    data = _make_test_data()
+    app = SpendApp(data, "Last 7 days")
+    async with app.run_test(size=(120, 40)) as pilot:
+        # Switch to Sessions tab
+        tabs = app.query("Tab")
+        for tab in tabs:
+            if "Sessions" in str(tab.label):
+                await pilot.click(type(tab), offset=(2, 0))
+                break
+        await pilot.pause()
+
+        detail = app.query_one("#session-detail", Static)
+        assert detail.display is False
+
+
+@pytest.mark.asyncio
 async def test_overview_chart_filters_zero_token_models():
     """Models with zero total tokens across all days should not appear in the chart."""
     from claude_spend.dashboard import SpendApp

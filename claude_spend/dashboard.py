@@ -102,6 +102,7 @@ class SpendApp(App):
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
+        Binding("escape", "hide_detail", "Close Detail", show=False),
     ]
 
     def __init__(self, data: DashboardData, days_label: str):
@@ -367,6 +368,103 @@ class SpendApp(App):
                 _fmt_cost(ic), _fmt_cost(oc), _fmt_cost(cwc), _fmt_cost(crc),
                 _fmt_cost(m.estimated_cost),
             )
+
+    def _build_session_detail(self, session) -> str:
+        """Build Rich markup string for the session detail panel."""
+        lines = []
+
+        # Header
+        lines.append(
+            f"[bold dodger_blue]Session Detail[/bold dodger_blue]  "
+            f"[dim]{session.start_time.strftime('%Y-%m-%d %H:%M')} · "
+            f"{session.project_name} · {_fmt_duration(session.duration_minutes)} · "
+            f"[bold]{_fmt_cost(session.estimated_cost)}[/bold][/dim]"
+        )
+        lines.append("")
+
+        # Cost breakdown
+        lines.append("[dim]COST BREAKDOWN[/dim]")
+        for model, usage in session.usage_by_model.items():
+            prices = PRICING.get(model, PRICING[FALLBACK_MODEL])
+            ic = (usage.input_tokens / 1_000_000) * prices["input"]
+            oc = (usage.output_tokens / 1_000_000) * prices["output"]
+            cwc = (usage.cache_write_tokens / 1_000_000) * prices["cache_write"]
+            crc = (usage.cache_read_tokens / 1_000_000) * prices["cache_read"]
+            total = ic + oc + cwc + crc
+            short_model = model.split("-")[1] if "-" in model else model
+            lines.append(
+                f"  {short_model:<8} In:{_fmt_cost(ic):>7}  Out:{_fmt_cost(oc):>7}  "
+                f"CW:{_fmt_cost(cwc):>7}  CR:[green]{_fmt_cost(crc):>7}[/green]  "
+                f"= [bold]{_fmt_cost(total)}[/bold]"
+            )
+
+        # Cache efficiency
+        u = session.total_usage
+        bar_width = 30
+        fill = int(session.cache_hit_ratio * bar_width)
+        bar = "[green]" + "\u2588" * fill + "[/green]" + "[dim]\u2591[/dim]" * (bar_width - fill)
+        pct = session.cache_hit_ratio * 100
+        color = "green" if pct >= 75 else "dark_orange" if pct >= 50 else "red"
+        lines.append("")
+        lines.append(f"[dim]CACHE[/dim]  {bar} [{color}]{pct:.0f}%[/{color}]  "
+                     f"[dim]Read: {_fmt_tokens(u.cache_read_tokens)}  "
+                     f"Write: {_fmt_tokens(u.cache_write_tokens)}  "
+                     f"R:W: {session.cache_rw_ratio:.1f}:1[/dim]")
+
+        # Skills
+        if session.skill_invocations:
+            lines.append("")
+            tags = "  ".join(f"[blue on dark_blue] {s} [/blue on dark_blue]" for s in session.skill_invocations)
+            lines.append(f"[dim]SKILLS[/dim]  {tags}")
+
+        # Tools (top 5)
+        if session.tool_counts:
+            sorted_tools = sorted(session.tool_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+            tools_str = "  ".join(f"{name}:{count}" for name, count in sorted_tools)
+            lines.append(f"[dim]TOOLS[/dim]   {tools_str}")
+
+        # Subagents
+        if session.subagent_calls:
+            lines.append("")
+            lines.append(f"[dim]SUBAGENTS ({len(session.subagent_calls)})[/dim]")
+            for c in session.subagent_calls[:5]:
+                cost = calculate_cost(c.usage, c.model)
+                short_model = c.model.split("-")[1] if "-" in c.model else c.model
+                lines.append(
+                    f"  {c.subagent_type:<10} {c.description[:35]:<35}  "
+                    f"{_fmt_tokens(c.usage.total):>6} tok  {_fmt_cost(cost):>7}  [dim]{short_model}[/dim]"
+                )
+
+        return "\n".join(lines)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if event.data_table.id != "sessions-table":
+            return
+        detail = self.query_one("#session-detail", Static)
+        if not hasattr(self, "_sessions_ordered"):
+            return
+        idx = event.cursor_row
+        if idx < 0 or idx >= len(self._sessions_ordered):
+            return
+
+        # Toggle off if re-selecting the same row
+        if detail.display and getattr(self, "_detail_row_idx", -1) == idx:
+            detail.display = False
+            self._detail_row_idx = -1
+            return
+
+        session = self._sessions_ordered[idx]
+        content = self._build_session_detail(session)
+        detail.update(content)
+        detail.display = True
+        self._detail_row_idx = idx
+
+    def action_hide_detail(self) -> None:
+        try:
+            detail = self.query_one("#session-detail", Static)
+            detail.display = False
+        except Exception:
+            pass
 
 
 def main():
