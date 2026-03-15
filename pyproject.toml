@@ -1,6 +1,6 @@
 [project]
 name = "claude-monitor-tui"
-version = "1.0.0"
+version = "0.0.1"
 description = "Terminal dashboard for monitoring Claude Code API usage and costs"
 readme = "README.md"
 license = "MIT"
@@ -9,7 +9,7 @@ authors = [
     { name = "Abiz" },
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
