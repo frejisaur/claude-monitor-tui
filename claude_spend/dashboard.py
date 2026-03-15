@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import statistics
 import sys
+from datetime import datetime, timedelta, timezone
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -269,15 +271,33 @@ class SpendApp(App):
 
             with TabPane("Sessions", id="tab-sessions"):
                 with Horizontal(id="sessions-numbers"):
-                    n = len(self.data.sessions)
-                    avg_cost = self.data.total_cost / max(1, n)
-                    avg_cache = sum(s.cache_hit_ratio for s in self.data.sessions) / max(1, n)
-                    avg_skills = sum(len(s.skill_invocations) for s in self.data.sessions) / max(1, n)
-                    yield BigNumber("Sessions", str(n))
-                    yield BigNumber("Total Cost", _fmt_cost(self.data.total_cost))
-                    yield BigNumber("Avg Cost", _fmt_cost(avg_cost))
-                    yield BigNumber("Avg Cache Hit", f"{avg_cache * 100:.0f}%")
-                    yield BigNumber("Avg Skills/Session", f"{avg_skills:.1f}")
+                    now = datetime.now(timezone.utc)
+                    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                    today_spend = sum(
+                        s.estimated_cost for s in self.data.sessions
+                        if s.start_time >= today_start
+                    )
+                    seven_day_ago = now - timedelta(days=7)
+                    seven_day_cost = sum(
+                        s.estimated_cost for s in self.data.sessions
+                        if s.start_time >= seven_day_ago
+                    )
+                    seven_day_avg = seven_day_cost / 7
+                    costs = [s.estimated_cost for s in self.data.sessions]
+                    median_cost = statistics.median(costs) if costs else 0.0
+                    scored = []
+                    for s in self.data.sessions:
+                        if s.turn_count == 0:
+                            continue
+                        cpt = s.estimated_cost / max(1, s.turn_count)
+                        score = (s.cache_hit_ratio * 50) + (1 - min(cpt, 5) / 5) * 50
+                        scored.append(max(0, min(100, score)))
+                    efficiency = sum(scored) / len(scored) if scored else 0.0
+                    yield BigNumber("Today's Spend", _fmt_cost(today_spend))
+                    yield BigNumber("7d Avg Daily", _fmt_cost(seven_day_avg))
+                    yield BigNumber("Median Session Cost", _fmt_cost(median_cost))
+                    yield BigNumber("Efficiency Score", f"{efficiency:.0f}")
+                    yield BigNumber("Sessions (30d)", str(len(self.data.sessions)))
                 yield PlotextPlot(id="sessions-heatmap")
                 yield Static("[#666666]Cache% = cache read / total input[/#666666]", classes="table-help")
                 yield DataTable(id="sessions-table")
@@ -380,23 +400,51 @@ class SpendApp(App):
         if not self.data.sessions:
             return
         plt = self.query_one("#sessions-heatmap", PlotextPlot).plt
-        plt.title("Session Density: Duration \u00d7 Cost  (brighter = more sessions)")
+        plt.title("Project Activity: Weekly Spend (brighter = higher cost)")
         plt.theme("dark")
 
-        dur_labels = ["0-15m", "15-30m", "30-60m", "1-2h", "2-5h", "5h+"]
-        cost_labels = ["$0-5", "$5-15", "$15-30", "$30-60", "$60-100", "$100+"]
-        dur_edges = [0, 15, 30, 60, 120, 300, float("inf")]
-        cost_edges = [0, 5, 15, 30, 60, 100, float("inf")]
+        # Determine week columns: ISO weeks in the 30-day window
+        now = datetime.now(timezone.utc)
+        window_start = now - timedelta(days=30)
+        # Find the Monday of the week containing window_start
+        first_monday = window_start - timedelta(days=window_start.weekday())
+        weeks: list[tuple[datetime, str]] = []
+        monday = first_monday
+        while monday <= now:
+            label = monday.strftime("%b %d")
+            weeks.append((monday, label))
+            monday += timedelta(days=7)
 
-        grid = [[0] * len(dur_labels) for _ in range(len(cost_labels))]
+        # Aggregate spend per project
+        project_spend: dict[str, float] = {}
+        project_week_spend: dict[str, dict[int, float]] = {}
         for s in self.data.sessions:
-            dur = s.duration_minutes
-            cost = s.estimated_cost
-            col = next((i for i in range(len(dur_edges) - 1) if dur_edges[i] <= dur < dur_edges[i + 1]), len(dur_labels) - 1)
-            row = next((i for i in range(len(cost_edges) - 1) if cost_edges[i] <= cost < cost_edges[i + 1]), len(cost_labels) - 1)
-            grid[row][col] += 1
+            proj = s.project_name
+            project_spend[proj] = project_spend.get(proj, 0) + s.estimated_cost
+            # Find which week column this session belongs to
+            for wi in range(len(weeks) - 1, -1, -1):
+                if s.start_time >= weeks[wi][0]:
+                    project_week_spend.setdefault(proj, {})[wi] = (
+                        project_week_spend.get(proj, {}).get(wi, 0) + s.estimated_cost
+                    )
+                    break
 
-        frame = _HeatmapFrame(grid, cost_labels, dur_labels)
+        # Top N projects by total spend (cap at 10)
+        top_projects = sorted(project_spend, key=project_spend.get, reverse=True)[:10]
+        if not top_projects or not weeks:
+            return
+
+        week_labels = [w[1] for w in weeks]
+        grid = []
+        for proj in top_projects:
+            row = [project_week_spend.get(proj, {}).get(wi, 0.0) for wi in range(len(weeks))]
+            grid.append(row)
+
+        # plotext heatmap crashes on all-zero grids (division by zero)
+        if not any(v > 0 for row in grid for v in row):
+            return
+
+        frame = _HeatmapFrame(grid, top_projects, week_labels)
         plt.heatmap(frame)
 
     def _populate_projects_table(self) -> None:

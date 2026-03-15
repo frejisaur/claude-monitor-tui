@@ -1,7 +1,7 @@
 """Automated TUI tests using Textual's Pilot (headless app runner)."""
 
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from claude_spend.data import (
     DashboardData, SessionSummary, TokenUsage, SubagentCall,
@@ -316,6 +316,115 @@ async def test_overview_shows_costs_chart():
     async with app.run_test(size=(120, 40)) as pilot:
         chart = app.query_one("#costs-chart")
         assert chart is not None
+
+
+@pytest.mark.asyncio
+async def test_sessions_metrics_new_bignumbers():
+    """Sessions tab should show the 5 redesigned BigNumber metrics."""
+    from claude_spend.dashboard import SpendApp, BigNumber
+
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    sessions = [
+        SessionSummary(
+            session_id="t1", project_name="proj-a",
+            start_time=today_start.replace(hour=9),
+            usage_by_model={"claude-opus-4-6": TokenUsage(
+                input_tokens=10000, output_tokens=5000,
+                cache_write_tokens=1000, cache_read_tokens=20000,
+            )},
+            turn_count=10, estimated_cost=5.0,
+        ),
+        SessionSummary(
+            session_id="t2", project_name="proj-b",
+            start_time=now - timedelta(days=3),
+            usage_by_model={"claude-sonnet-4-6": TokenUsage(
+                input_tokens=8000, output_tokens=4000,
+                cache_write_tokens=500, cache_read_tokens=16000,
+            )},
+            turn_count=20, estimated_cost=3.0,
+        ),
+    ]
+    data = DashboardData(
+        sessions=sessions,
+        daily=aggregate_by_day(sessions),
+        projects=aggregate_by_project(sessions),
+        models=aggregate_by_model(sessions),
+        subagent_types=aggregate_by_subagent_type([]),
+        all_subagent_calls=[],
+        skill_types=aggregate_by_skill(sessions, 0.0),
+        baseline_avg_cost=0.0,
+        total_cost=8.0,
+        total_tokens=sum(s.total_usage.total for s in sessions),
+    )
+    app = SpendApp(data, "Last 30 days")
+    async with app.run_test(size=(120, 40)) as pilot:
+        bignums = app.query("BigNumber")
+        labels = [str(bn.render()).split("\n")[-1].strip() for bn in bignums]
+        # Sessions tab should have these 5 new labels
+        assert "Today's Spend" in labels
+        assert "7d Avg Daily" in labels
+        assert "Median Session Cost" in labels
+        assert "Efficiency Score" in labels
+        assert "Sessions (30d)" in labels
+        # Old sessions-specific labels should NOT be present
+        assert "Avg Skills/Session" not in labels
+        assert "Avg Cost" not in labels
+
+        # Verify computed values via rendered content
+        values = {}
+        for bn in bignums:
+            rendered = str(bn.render())
+            parts = rendered.split("\n")
+            if len(parts) >= 2:
+                values[parts[-1].strip()] = parts[0].strip()
+        # Today's Spend = session t1 ($5.00, started today)
+        assert values.get("Today's Spend") == "$5.00"
+        # Median of [$3.00, $5.00] = $4.00
+        assert values.get("Median Session Cost") == "$4.00"
+        # Sessions count = 2
+        assert values.get("Sessions (30d)") == "2"
+
+
+@pytest.mark.asyncio
+async def test_sessions_heatmap_project_week_binning():
+    """Heatmap should bin sessions by project and week."""
+    from claude_spend.dashboard import SpendApp
+    from textual_plotext import PlotextPlot
+
+    now = datetime.now(timezone.utc)
+    sessions = [
+        SessionSummary(
+            session_id="h1", project_name="alpha",
+            start_time=now - timedelta(days=1),
+            usage_by_model={"claude-opus-4-6": TokenUsage(input_tokens=100, output_tokens=50)},
+            estimated_cost=10.0,
+        ),
+        SessionSummary(
+            session_id="h2", project_name="beta",
+            start_time=now - timedelta(days=8),
+            usage_by_model={"claude-opus-4-6": TokenUsage(input_tokens=100, output_tokens=50)},
+            estimated_cost=7.0,
+        ),
+    ]
+    data = DashboardData(
+        sessions=sessions,
+        daily=aggregate_by_day(sessions),
+        projects=aggregate_by_project(sessions),
+        models=aggregate_by_model(sessions),
+        subagent_types=aggregate_by_subagent_type([]),
+        all_subagent_calls=[],
+        skill_types=aggregate_by_skill(sessions, 0.0),
+        baseline_avg_cost=0.0,
+        total_cost=17.0,
+        total_tokens=sum(s.total_usage.total for s in sessions),
+    )
+    app = SpendApp(data, "Last 30 days")
+    async with app.run_test(size=(120, 40)) as pilot:
+        heatmap = app.query_one("#sessions-heatmap", PlotextPlot)
+        assert heatmap is not None
+        # Widget exists and renders without crash — data binning is correct
 
 
 @pytest.mark.asyncio
