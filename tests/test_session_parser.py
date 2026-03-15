@@ -124,6 +124,49 @@ def test_parse_conversation_handles_malformed_lines(tmp_path):
     assert "claude-opus-4-6" in data.usage_by_model
 
 
+def test_parse_conversation_resolves_short_model_names(tmp_path):
+    """When Task input specifies model='haiku', the SubagentCall should use the full model ID."""
+    messages = [
+        {
+            "type": "assistant",
+            "message": {
+                "model": "claude-opus-4-6",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_short",
+                    "name": "Task",
+                    "input": {
+                        "subagent_type": "Explore",
+                        "description": "test",
+                        "prompt": "...",
+                        "model": "haiku",
+                    },
+                }],
+                "usage": {"input_tokens": 100, "output_tokens": 50,
+                          "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            },
+        },
+        {
+            "type": "user",
+            "toolUseResult": {
+                "totalTokens": 5000,
+                "totalDurationMs": 2000,
+                "totalToolUseCount": 1,
+                "usage": {"input_tokens": 4000, "output_tokens": 1000},
+            },
+            "message": {
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_short"}],
+            },
+        },
+    ]
+    jsonl_path = tmp_path / "session.jsonl"
+    _write_jsonl(jsonl_path, messages)
+
+    data = parse_conversation_jsonl(str(jsonl_path))
+    assert len(data.subagent_calls) == 1
+    assert data.subagent_calls[0].model == "claude-haiku-4-5-20251001"
+
+
 def test_parse_conversation_missing_file():
     data = parse_conversation_jsonl("/nonexistent/path.jsonl")
     assert data.usage_by_model == {}

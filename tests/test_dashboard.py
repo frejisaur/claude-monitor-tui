@@ -123,7 +123,7 @@ async def test_tab_switching():
 
     app = SpendApp(_make_test_data(), "Last 7 days")
     async with app.run_test(size=(120, 40)) as pilot:
-        for tab_name in ["Sessions", "Projects", "Models", "Subagents", "Costs", "Skills", "Overview"]:
+        for tab_name in ["Sessions", "Projects", "Models", "Subagents", "Skills", "Overview"]:
             tabs = app.query("Tab")
             for tab in tabs:
                 if tab_name in str(tab.label):
@@ -307,17 +307,14 @@ async def test_session_drilldown_uses_row_key_not_cursor():
 
 
 @pytest.mark.asyncio
-async def test_overview_chart_filters_zero_token_models():
-    """Models with zero total tokens across all days should not appear in the chart."""
+async def test_overview_shows_costs_chart():
+    """Overview tab should contain the daily costs chart."""
     from claude_spend.dashboard import SpendApp
-    from claude_spend.data import TokenUsage
 
     data = _make_test_data()
-    for d in data.daily:
-        d.usage_by_model["claude-zero-model"] = TokenUsage()
     app = SpendApp(data, "Last 7 days")
     async with app.run_test(size=(120, 40)) as pilot:
-        chart = app.query_one("#overview-chart")
+        chart = app.query_one("#costs-chart")
         assert chart is not None
 
 

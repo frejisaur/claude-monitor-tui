@@ -1,4 +1,4 @@
-from claude_spend.data import TokenUsage, PRICING, calculate_cost
+from claude_spend.data import TokenUsage, PRICING, calculate_cost, resolve_model_id
 
 
 def test_token_usage_total():
@@ -62,6 +62,23 @@ def test_calculate_cost_unknown_model_falls_back_to_sonnet():
     cost = calculate_cost(usage, "claude-unknown-model")
     # Falls back to sonnet: $3/MTok
     assert abs(cost - 3.0) < 0.01
+
+
+def test_resolve_model_id_short_names():
+    """Short names fuzzy-match against PRICING keys, version-agnostic."""
+    assert resolve_model_id("haiku") == "claude-haiku-4-5-20251001"
+    assert resolve_model_id("sonnet") == "claude-sonnet-4-6"
+    assert resolve_model_id("opus") == "claude-opus-4-6"
+
+
+def test_resolve_model_id_full_names_pass_through():
+    assert resolve_model_id("claude-opus-4-6") == "claude-opus-4-6"
+    assert resolve_model_id("claude-sonnet-4-6") == "claude-sonnet-4-6"
+
+
+def test_resolve_model_id_unknown_passes_through():
+    assert resolve_model_id("unknown") == "unknown"
+    assert resolve_model_id("some-future-model") == "some-future-model"
 
 
 def test_session_summary_default_start_time_is_aware():

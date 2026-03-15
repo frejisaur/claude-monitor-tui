@@ -18,6 +18,20 @@ PRICING: dict[str, dict[str, float]] = {
 
 FALLBACK_MODEL = "claude-sonnet-4-6"
 
+def resolve_model_id(model: str) -> str:
+    """Resolve a potentially short model name to its full model ID.
+
+    Matches short names (e.g. 'haiku') against PRICING keys by substring,
+    so it stays correct when model versions change.
+    """
+    if model in PRICING:
+        return model
+    # Fuzzy-match: 'haiku' matches 'claude-haiku-4-5-20251001'
+    for full_id in PRICING:
+        if model in full_id:
+            return full_id
+    return model
+
 
 @dataclass
 class TokenUsage:
@@ -209,9 +223,12 @@ def parse_conversation_jsonl(jsonl_path: str) -> ConversationData:
             if tool_use_id and tool_use_id in task_calls:
                 call_info = task_calls[tool_use_id]
                 usage_raw = result.get("usage", {})
-                model = (
-                    call_info["model_param"]
-                    or subagent_models.get(tool_use_id, "unknown")
+                # Prefer full model ID from progress messages (authoritative);
+                # fall back to short name from Task param, resolved via PRICING keys.
+                model = resolve_model_id(
+                    subagent_models.get(tool_use_id)
+                    or call_info["model_param"]
+                    or "unknown"
                 )
                 data.subagent_calls.append(SubagentCall(
                     subagent_type=call_info["subagent_type"],
@@ -519,12 +536,52 @@ def load_all(claude_dir: str, days: int | None = 30) -> DashboardData:
     )
     skill_aggs = aggregate_by_skill(sessions, baseline_avg_cost)
 
+    subagent_aggs = aggregate_by_subagent_type(all_subagent_calls)
+
+    # Compute parent session residual so subagent tab totals match cost tab.
+    # usage_by_model captures ALL API call tokens (parent + subagent);
+    # subagent_calls only captures the subagent portion.
+    total_sub_usage = TokenUsage()
+    for a in subagent_aggs:
+        total_sub_usage = total_sub_usage + a.total_usage
+    total_subagent_cost = sum(a.estimated_cost for a in subagent_aggs)
+
+    total_session_usage = TokenUsage()
+    for s in sessions:
+        for u in s.usage_by_model.values():
+            total_session_usage = total_session_usage + u
+
+    parent_usage = TokenUsage(
+        input_tokens=max(0, total_session_usage.input_tokens - total_sub_usage.input_tokens),
+        output_tokens=max(0, total_session_usage.output_tokens - total_sub_usage.output_tokens),
+        cache_write_tokens=max(0, total_session_usage.cache_write_tokens - total_sub_usage.cache_write_tokens),
+        cache_read_tokens=max(0, total_session_usage.cache_read_tokens - total_sub_usage.cache_read_tokens),
+    )
+    parent_cost = total_cost - total_subagent_cost
+
+    if parent_usage.total > 0:
+        model_costs: dict[str, float] = {}
+        for s in sessions:
+            for m, u in s.usage_by_model.items():
+                model_costs[m] = model_costs.get(m, 0.0) + calculate_cost(u, m)
+        primary_model = max(model_costs, key=model_costs.get) if model_costs else "unknown"
+
+        subagent_aggs.append(SubagentTypeAggregate(
+            subagent_type="main [claude code orchestrator]",
+            call_count=len(sessions),
+            total_usage=parent_usage,
+            avg_tokens_per_call=parent_usage.total // max(1, len(sessions)),
+            estimated_cost=parent_cost,
+            models_used={primary_model: len(sessions)},
+        ))
+        subagent_aggs.sort(key=lambda a: a.estimated_cost, reverse=True)
+
     return DashboardData(
         sessions=sessions,
         daily=aggregate_by_day(sessions),
         projects=aggregate_by_project(sessions),
         models=aggregate_by_model(sessions),
-        subagent_types=aggregate_by_subagent_type(all_subagent_calls),
+        subagent_types=subagent_aggs,
         all_subagent_calls=sorted(all_subagent_calls, key=lambda c: c.usage.total, reverse=True),
         skill_types=skill_aggs,
         total_cost=total_cost,

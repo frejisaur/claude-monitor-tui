@@ -15,6 +15,8 @@ from textual.widgets import (
 from textual_plotext import PlotextPlot
 from rich.text import Text
 
+import math
+
 from claude_spend.data import load_all, DashboardData, calculate_cost, TokenUsage, PRICING, FALLBACK_MODEL
 
 
@@ -30,6 +32,18 @@ def _fmt_tokens(n: int) -> str:
 def _fmt_cost(c: float) -> str:
     """Format cost: $12.34."""
     return f"${c:.2f}"
+
+
+def _set_yticks(plt, max_val: float, fmt=_fmt_tokens, num_ticks: int = 5) -> None:
+    """Set nice y-axis ticks with human-readable labels."""
+    if max_val <= 0:
+        return
+    step = max_val / num_ticks
+    magnitude = 10 ** math.floor(math.log10(step))
+    step = math.ceil(step / magnitude) * magnitude
+    ticks = [i * step for i in range(num_ticks + 1)]
+    labels = [fmt(int(t)) for t in ticks]
+    plt.yticks(ticks, labels)
 
 
 def _fmt_duration(mins: int) -> str:
@@ -54,6 +68,83 @@ def _fmt_cost_delta(delta: float) -> Text:
     if delta >= 0:
         return Text(f"+${delta:.2f}", style=color)
     return Text(f"-${abs(delta):.2f}", style=color)
+
+
+def _parse_tokens_str(s: str) -> float:
+    """Parse formatted token string back to a number for sorting."""
+    s = str(s).strip()
+    if s.endswith("M"):
+        return float(s[:-1]) * 1_000_000
+    if s.endswith("k"):
+        return float(s[:-1]) * 1_000
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+def _parse_cost_str(s: str) -> float:
+    """Parse formatted cost string back to a number for sorting."""
+    try:
+        return float(str(s).lstrip("$"))
+    except ValueError:
+        return 0.0
+
+
+def _parse_duration_str(s: str) -> int:
+    """Parse formatted duration string back to minutes for sorting."""
+    total = 0
+    s = str(s).strip()
+    if "h" in s:
+        parts = s.split("h")
+        total += int(parts[0].strip()) * 60
+        s = parts[1]
+    if "m" in s:
+        s = s.replace("m", "").strip()
+        if s:
+            total += int(s)
+    return total
+
+
+def _parse_pct_str(s: str) -> float:
+    """Parse percentage string back to a number for sorting."""
+    try:
+        return float(str(s).rstrip("%"))
+    except ValueError:
+        return 0.0
+
+
+def _parse_int_str(s: str) -> int:
+    """Parse integer string for sorting."""
+    try:
+        return int(str(s).strip())
+    except ValueError:
+        return 0
+
+
+_NUMERIC_COLUMNS: dict[str, callable] = {
+    "Tokens": _parse_tokens_str,
+    "Cost": _parse_cost_str,
+    "Total": _parse_cost_str,
+    "Duration": _parse_duration_str,
+    "Sessions": _parse_int_str,
+    "Calls": _parse_int_str,
+    "Input": _parse_tokens_str,
+    "Output": _parse_tokens_str,
+    "Cache Write": _parse_tokens_str,
+    "Cache Read": _parse_tokens_str,
+    "Avg Tokens": _parse_tokens_str,
+    "Total Tokens": _parse_tokens_str,
+    "%": _parse_pct_str,
+    "Input Cost": _parse_cost_str,
+    "Output Cost": _parse_cost_str,
+    "Cache Write Cost": _parse_cost_str,
+    "Cache Read Cost": _parse_cost_str,
+    "Cache Hit": _parse_pct_str,
+    "Cache R:W": lambda s: float(str(s).split(":")[0]) if ":" in str(s) else 0.0,
+    "Avg Turns": _parse_int_str,
+    "Cost Delta": lambda s: float(str(s).replace("+", "").replace("$", "")) if str(s).strip() else 0.0,
+}
 
 
 class _HeatmapFrame:
@@ -111,7 +202,8 @@ class SpendApp(App):
         margin: 10 0;
     }
     PlotextPlot {
-        height: 15;
+        height: 1fr;
+        min-height: 15;
         margin: 0 1;
     }
     #sessions-numbers {
@@ -134,6 +226,12 @@ class SpendApp(App):
         margin: 0 1;
         padding: 0 1;
     }
+    #subagents-tables {
+        height: 1fr;
+    }
+    #subagents-tables DataTable {
+        width: 1fr;
+    }
     """
 
     BINDINGS = [
@@ -145,6 +243,7 @@ class SpendApp(App):
         super().__init__()
         self.data = data
         self.days_label = days_label
+        self._sort_state: dict[str, tuple[str, bool]] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -157,14 +256,16 @@ class SpendApp(App):
             yield Footer()
             return
 
-        with TabbedContent("Overview", "Sessions", "Projects", "Models", "Subagents", "Costs", "Skills"):
+        with TabbedContent("Overview", "Sessions", "Projects", "Models", "Subagents", "Skills"):
             with TabPane("Overview", id="tab-overview"):
                 with Horizontal(id="overview-numbers"):
                     yield BigNumber("Total Tokens", _fmt_tokens(self.data.total_tokens))
                     yield BigNumber("Est. API Cost", _fmt_cost(self.data.total_cost))
                     yield BigNumber("Sessions", str(len(self.data.sessions)))
 
-                yield PlotextPlot(id="overview-chart")
+                yield PlotextPlot(id="costs-chart")
+                yield Static("[#666666]Cost by token type per model[/#666666]", classes="table-help")
+                yield DataTable(id="costs-table")
 
             with TabPane("Sessions", id="tab-sessions"):
                 with Horizontal(id="sessions-numbers"):
@@ -194,12 +295,9 @@ class SpendApp(App):
             with TabPane("Subagents", id="tab-subagents"):
                 yield PlotextPlot(id="subagents-chart")
                 yield Static("[#666666]Avg Tokens = per call[/#666666]", classes="table-help")
-                yield DataTable(id="subagents-table")
-
-            with TabPane("Costs", id="tab-costs"):
-                yield PlotextPlot(id="costs-chart")
-                yield Static("[#666666]Cost by token type per model[/#666666]", classes="table-help")
-                yield DataTable(id="costs-table")
+                with Horizontal(id="subagents-tables"):
+                    yield DataTable(id="subagents-table")
+                    yield DataTable(id="subagents-desc-table")
 
             with TabPane("Skills", id="tab-skills"):
                 with Horizontal(id="skills-numbers"):
@@ -235,13 +333,30 @@ class SpendApp(App):
             self._populate_projects_table()
             self._populate_models_table()
             self._populate_subagents_table()
+            self._populate_subagents_desc_table()
             self._populate_costs_table()
-            self._populate_overview_chart()
             self._populate_models_chart()
             self._populate_subagents_chart()
             self._populate_costs_chart()
             self._populate_skills_chart()
             self._populate_skills_table()
+
+    def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
+        """Sort table by clicked column header, toggling direction on re-click."""
+        table = event.data_table
+        col_key = event.column_key
+        col_label = str(table.columns[col_key].label)
+
+        table_id = table.id or ""
+        prev_col, prev_reverse = self._sort_state.get(table_id, (None, False))
+        reverse = not prev_reverse if prev_col == str(col_key) else False
+        self._sort_state[table_id] = (str(col_key), reverse)
+
+        parser = _NUMERIC_COLUMNS.get(col_label)
+        if parser:
+            table.sort(col_key, key=lambda val: parser(val), reverse=reverse)
+        else:
+            table.sort(col_key, key=lambda val: str(val).lower(), reverse=reverse)
 
     def _populate_sessions_table(self) -> None:
         table = self.query_one("#sessions-table", DataTable)
@@ -328,39 +443,17 @@ class SpendApp(App):
                 _fmt_cost(a.estimated_cost),
             )
 
-    def _populate_overview_chart(self) -> None:
-        if not self.data.daily:
-            return
-        plt = self.query_one("#overview-chart", PlotextPlot).plt
-        plt.title("Daily Token Usage")
-        plt.theme("dark")
-
-        dates = [d.date[5:] for d in self.data.daily]  # MM-DD
-        models = sorted({m for d in self.data.daily for m in d.usage_by_model})
-        colors = ["red", "blue", "green", "yellow", "cyan"]
-
-        max_val = 0
-        for i, model in enumerate(models):
-            values = [
-                d.usage_by_model.get(model, TokenUsage()).total
-                for d in self.data.daily
-            ]
-            if all(v == 0 for v in values):
-                continue
-            max_val = max(max_val, max(values))
-            short_name = model.split("-")[1] if "-" in model else model
-            plt.bar(dates, values, label=short_name, color=colors[i % len(colors)])
-
-        if max_val > 0:
-            import math
-            num_ticks = 5
-            step = max_val / num_ticks
-            magnitude = 10 ** math.floor(math.log10(step))
-            step = math.ceil(step / magnitude) * magnitude
-            ticks = [i * step for i in range(num_ticks + 1)]
-            labels = [_fmt_tokens(int(t)) for t in ticks]
-            plt.yticks(ticks, labels)
-        plt.ylabel("Tokens")
+    def _populate_subagents_desc_table(self) -> None:
+        table = self.query_one("#subagents-desc-table", DataTable)
+        table.cursor_type = "row"
+        table.add_columns("Description", "Type", "Tokens", "Cost")
+        for c in self.data.all_subagent_calls[:50]:
+            table.add_row(
+                c.description[:45],
+                c.subagent_type,
+                _fmt_tokens(c.usage.total),
+                _fmt_cost(calculate_cost(c.usage, c.model)),
+            )
 
     def _populate_models_chart(self) -> None:
         if not self.data.models:
@@ -383,6 +476,7 @@ class SpendApp(App):
         types = [a.subagent_type for a in self.data.subagent_types]
         tokens = [a.total_usage.total for a in self.data.subagent_types]
         plt.bar(types, tokens, color="green")
+        _set_yticks(plt, max(tokens) if tokens else 0)
 
     def _populate_skills_chart(self) -> None:
         if not self.data.skill_types:
@@ -426,13 +520,24 @@ class SpendApp(App):
         dates = [d.date[5:] for d in self.data.daily]
         colors = ["red", "orange+", "yellow", "green"]
         labels = ["Input", "Output", "Cache Write", "Cache Read"]
+        price_keys = ["input", "output", "cache_write", "cache_read"]
+        token_attrs = ["input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens"]
 
-        for i, (label, attr) in enumerate(zip(labels, ["input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens"])):
-            values = []
+        Y = []
+        for attr, pkey in zip(token_attrs, price_keys):
+            series = []
             for d in self.data.daily:
-                total = sum(getattr(u, attr) for u in d.usage_by_model.values())
-                values.append(total)
-            plt.bar(dates, values, label=label, color=colors[i])
+                day_cost = 0.0
+                for model, usage in d.usage_by_model.items():
+                    prices = PRICING.get(model, PRICING[FALLBACK_MODEL])
+                    day_cost += (getattr(usage, attr) / 1_000_000) * prices[pkey]
+                series.append(day_cost)
+            Y.append(series)
+
+        plt.stacked_bar(dates, Y, color=colors, labels=labels)
+        max_val = max(sum(y[i] for y in Y) for i in range(len(dates))) if dates else 0
+        _set_yticks(plt, max_val, fmt=_fmt_cost)
+        plt.ylabel("Cost ($)")
 
     def _populate_costs_table(self) -> None:
         table = self.query_one("#costs-table", DataTable)
