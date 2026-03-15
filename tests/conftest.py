@@ -21,7 +21,7 @@ def sample_session_meta():
     return {
         "session_id": "abc-123",
         "project_path": "/Users/test/code/myproject",
-        "start_time": "2026-03-05T10:00:00.000Z",
+        "start_time": (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
         "duration_minutes": 45,
         "user_message_count": 10,
         "assistant_message_count": 20,
