@@ -225,3 +225,47 @@ def test_build_effectiveness_without_facet():
     )
     assert result.outcome == "likely_achieved"
     assert result.outcome_source == "proxy"
+
+
+def test_effectiveness_end_to_end(tmp_claude_dir, sample_session_meta, sample_facet, sample_jsonl_messages):
+    """Full pipeline: meta + facet + JSONL -> effectiveness data on DashboardData."""
+    # Write session-meta with extended fields
+    sample_session_meta.update({
+        "git_commits": 2, "tool_errors": 0, "user_interruptions": 0,
+        "lines_added": 100, "files_modified": 3,
+    })
+    meta_dir = tmp_claude_dir / "usage-data" / "session-meta"
+    with open(meta_dir / "abc-123.json", "w") as f:
+        json.dump(sample_session_meta, f)
+
+    # Write facet
+    facets_dir = tmp_claude_dir / "usage-data" / "facets"
+    facets_dir.mkdir(parents=True, exist_ok=True)
+    with open(facets_dir / "abc-123.json", "w") as f:
+        json.dump(sample_facet, f)
+
+    # Write JSONL
+    project_dir = tmp_claude_dir / "projects" / "-Users-test-code-myproject"
+    project_dir.mkdir(parents=True)
+    with open(project_dir / "abc-123.jsonl", "w") as f:
+        for msg in sample_jsonl_messages:
+            f.write(json.dumps(msg) + "\n")
+
+    from claude_spend.data import load_all
+    data = load_all(str(tmp_claude_dir))
+
+    # Verify existing data still works
+    assert len(data.sessions) == 1
+    assert data.sessions[0].estimated_cost > 0
+
+    # Verify effectiveness layer
+    assert data.facets_loaded == 1
+    assert len(data.effectiveness) == 1
+    eff = data.effectiveness[0]
+    assert eff.outcome == "fully_achieved"
+    assert eff.outcome_source == "facet"
+    assert eff.goal_categories == {"debugging_investigation": 1, "implementation": 1}
+
+    # Verify aggregates
+    assert data.effectiveness_agg is not None
+    assert data.effectiveness_agg.achievement_rate == 1.0
