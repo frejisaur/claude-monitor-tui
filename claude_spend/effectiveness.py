@@ -141,3 +141,96 @@ def build_session_effectiveness(
         efficiency_score=efficiency,
         friction_counts=friction,
     )
+
+
+@dataclass
+class CategoryStats:
+    sessions: int = 0
+    avg_cost: float = 0.0
+    avg_duration: int = 0
+    achievement_rate: float = 0.0
+    avg_efficiency: float = 0.0
+
+
+@dataclass
+class EffectivenessAggregates:
+    total_sessions: int = 0
+    faceted_count: int = 0
+    proxied_count: int = 0
+    achievement_rate: float = 0.0
+    avg_friction: float = 0.0
+    avg_efficiency: float = 0.0
+    friction_totals: dict[str, int] = field(default_factory=dict)
+    friction_avg_extra_cost: dict[str, float] = field(default_factory=dict)
+    category_stats: dict[str, dict] = field(default_factory=dict)
+
+
+def aggregate_effectiveness(
+    records: list[SessionEffectiveness],
+    sessions_by_id: dict[str, SessionSummary] | None = None,
+    metas_by_id: dict[str, SessionMeta] | None = None,
+) -> EffectivenessAggregates:
+    """Compute aggregate effectiveness metrics from per-session records."""
+    if not records:
+        return EffectivenessAggregates()
+
+    sessions_by_id = sessions_by_id or {}
+    metas_by_id = metas_by_id or {}
+
+    faceted = [r for r in records if r.outcome_source == "facet"]
+    proxied = [r for r in records if r.outcome_source == "proxy"]
+    achieved = [r for r in records if r.outcome in ACHIEVED_OUTCOMES]
+
+    # Overall avg cost (for friction extra-cost calculation)
+    all_costs = [sessions_by_id[r.session_id].estimated_cost for r in records if r.session_id in sessions_by_id]
+    overall_avg_cost = sum(all_costs) / len(all_costs) if all_costs else 0.0
+
+    # Friction totals + avg extra cost per friction type
+    friction_totals: dict[str, int] = {}
+    friction_session_costs: dict[str, list[float]] = {}
+    for r in records:
+        for k, v in r.friction_counts.items():
+            friction_totals[k] = friction_totals.get(k, 0) + v
+            cost = sessions_by_id.get(r.session_id)
+            if cost:
+                friction_session_costs.setdefault(k, []).append(cost.estimated_cost)
+
+    friction_avg_extra_cost: dict[str, float] = {}
+    for ftype, costs in friction_session_costs.items():
+        avg_friction_cost = sum(costs) / len(costs)
+        friction_avg_extra_cost[ftype] = max(0, avg_friction_cost - overall_avg_cost)
+
+    total_friction = sum(friction_totals.values())
+    efficiency_scores = [r.efficiency_score for r in records if r.efficiency_score > 0]
+
+    # Category breakdown
+    by_cat: dict[str, list[SessionEffectiveness]] = {}
+    for r in records:
+        for cat in r.goal_categories:
+            by_cat.setdefault(cat, []).append(r)
+
+    category_stats: dict[str, dict] = {}
+    for cat, cat_records in by_cat.items():
+        cat_achieved = [r for r in cat_records if r.outcome in ACHIEVED_OUTCOMES]
+        cat_eff = [r.efficiency_score for r in cat_records if r.efficiency_score > 0]
+        cat_costs = [sessions_by_id[r.session_id].estimated_cost for r in cat_records if r.session_id in sessions_by_id]
+        cat_durs = [metas_by_id[r.session_id].duration_minutes for r in cat_records if r.session_id in metas_by_id]
+        category_stats[cat] = {
+            "sessions": len(cat_records),
+            "avg_cost": sum(cat_costs) / len(cat_costs) if cat_costs else 0.0,
+            "avg_duration": sum(cat_durs) // len(cat_durs) if cat_durs else 0,
+            "achievement_rate": len(cat_achieved) / len(cat_records),
+            "avg_efficiency": sum(cat_eff) / len(cat_eff) if cat_eff else 0.0,
+        }
+
+    return EffectivenessAggregates(
+        total_sessions=len(records),
+        faceted_count=len(faceted),
+        proxied_count=len(proxied),
+        achievement_rate=len(achieved) / len(records),
+        avg_friction=total_friction / len(records),
+        avg_efficiency=sum(efficiency_scores) / len(efficiency_scores) if efficiency_scores else 0.0,
+        friction_totals=friction_totals,
+        friction_avg_extra_cost=friction_avg_extra_cost,
+        category_stats=category_stats,
+    )

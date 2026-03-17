@@ -128,6 +128,54 @@ def test_build_effectiveness_with_facet():
     assert result.friction_counts == {"tool_permission_error": 2}
 
 
+def test_aggregate_effectiveness():
+    from claude_spend.data import SessionSummary, SessionMeta
+    from claude_spend.effectiveness import (
+        SessionEffectiveness, EffectivenessAggregates, aggregate_effectiveness,
+    )
+
+    records = [
+        SessionEffectiveness(session_id="s1", outcome="fully_achieved", outcome_source="facet",
+                             goal_categories={"implementation": 1}, efficiency_score=0.8,
+                             friction_counts={"tool_permission_error": 1}),
+        SessionEffectiveness(session_id="s2", outcome="mostly_achieved", outcome_source="proxy",
+                             goal_categories={"debugging": 1}, efficiency_score=1.2,
+                             friction_counts={}),
+        SessionEffectiveness(session_id="s3", outcome="not_achieved", outcome_source="facet",
+                             goal_categories={"implementation": 1}, efficiency_score=2.0,
+                             friction_counts={"wrong_approach": 1, "tool_permission_error": 1}),
+    ]
+    sessions_by_id = {
+        "s1": SessionSummary(session_id="s1", estimated_cost=3.00, duration_minutes=20),
+        "s2": SessionSummary(session_id="s2", estimated_cost=2.00, duration_minutes=15),
+        "s3": SessionSummary(session_id="s3", estimated_cost=7.00, duration_minutes=40),
+    }
+    metas_by_id = {
+        "s1": SessionMeta(session_id="s1", duration_minutes=20),
+        "s2": SessionMeta(session_id="s2", duration_minutes=15),
+        "s3": SessionMeta(session_id="s3", duration_minutes=40),
+    }
+
+    agg = aggregate_effectiveness(records, sessions_by_id, metas_by_id)
+    assert agg.total_sessions == 3
+    assert agg.faceted_count == 2
+    assert agg.proxied_count == 1
+    # 2 of 3 are achieved (fully + mostly)
+    assert agg.achievement_rate == pytest.approx(2 / 3)
+    assert agg.avg_efficiency == pytest.approx((0.8 + 1.2 + 2.0) / 3)
+    # friction: tool_permission_error=2, wrong_approach=1
+    assert agg.friction_totals["tool_permission_error"] == 2
+    assert agg.friction_totals["wrong_approach"] == 1
+    # friction avg extra cost should be populated
+    assert "tool_permission_error" in agg.friction_avg_extra_cost
+    # category breakdown
+    assert "implementation" in agg.category_stats
+    assert agg.category_stats["implementation"]["sessions"] == 2
+    assert agg.category_stats["implementation"]["achievement_rate"] == pytest.approx(0.5)
+    assert agg.category_stats["implementation"]["avg_cost"] == pytest.approx(5.0)
+    assert agg.category_stats["implementation"]["avg_duration"] == 30
+
+
 def test_build_effectiveness_without_facet():
     from claude_spend.data import SessionMeta, SessionSummary
     from claude_spend.effectiveness import build_session_effectiveness
