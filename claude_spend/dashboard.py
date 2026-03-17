@@ -146,6 +146,15 @@ _NUMERIC_COLUMNS: dict[str, callable] = {
     "Cache R:W": lambda s: float(str(s).split(":")[0]) if ":" in str(s) else 0.0,
     "Avg Turns": _parse_int_str,
     "Cost Delta": lambda s: float(str(s).replace("+", "").replace("$", "")) if str(s).strip() else 0.0,
+    "Friction": _parse_int_str,
+    "Avg Outcome": _parse_pct_str,
+    "Achievement Rate": _parse_pct_str,
+    "Efficiency": lambda s: float(str(s).replace("x", "").replace("n/a", "0")),
+    "% Sessions": _parse_pct_str,
+    "Count": _parse_int_str,
+    "Avg Extra Cost": lambda s: float(str(s).replace("+", "").replace("$", "")) if str(s).strip() else 0.0,
+    "Avg Cost": _parse_cost_str,
+    "Avg Duration": _parse_duration_str,
 }
 
 
@@ -268,6 +277,12 @@ class SpendApp(App):
                     yield BigNumber("Total Tokens", _fmt_tokens(self.data.total_tokens))
                     yield BigNumber("Est. API Cost", _fmt_cost(self.data.total_cost))
                     yield BigNumber("Sessions", str(len(self.data.sessions)))
+                    eff_agg = self.data.effectiveness_agg
+                    if eff_agg and eff_agg.total_sessions > 0:
+                        ach_label = f"{eff_agg.achievement_rate * 100:.0f}% ({eff_agg.faceted_count}f)"
+                    else:
+                        ach_label = "—"
+                    yield BigNumber("Achievement", ach_label)
 
                 yield PlotextPlot(id="costs-chart")
                 yield Static("[#666666]Cost by token type per model[/#666666]", classes="table-help")
@@ -553,9 +568,26 @@ class SpendApp(App):
     def _populate_subagents_table(self) -> None:
         table = self.query_one("#subagents-table", DataTable)
         table.cursor_type = "row"
-        table.add_columns("Type", "Calls", "Avg Tokens", "Total Tokens", "Primary Model", "Cost")
+        table.add_columns("Type", "Calls", "Avg Tokens", "Total Tokens", "Primary Model", "Cost", "Avg Outcome")
+
+        from claude_spend.effectiveness import ACHIEVED_OUTCOMES
+        type_sessions: dict[str, set[str]] = {}
+        for c in self.data.all_subagent_calls:
+            type_sessions.setdefault(c.subagent_type, set()).add(c.session_id)
+
+        eff_map = self._eff_lookup()
+
         for a in self.data.subagent_types:
             primary_model = max(a.models_used, key=a.models_used.get) if a.models_used else "unknown"
+            sids = type_sessions.get(a.subagent_type, set())
+            effs = [eff_map[sid] for sid in sids if sid in eff_map]
+            if effs:
+                achieved = sum(1 for e in effs if e.outcome in ACHIEVED_OUTCOMES)
+                rate = achieved / len(effs) * 100
+                color = "green" if rate >= 70 else "dark_orange" if rate >= 50 else "red"
+                outcome_text = Text(f"{rate:.0f}%", style=color)
+            else:
+                outcome_text = Text("—", style="dim")
             table.add_row(
                 a.subagent_type,
                 str(a.call_count),
@@ -563,6 +595,7 @@ class SpendApp(App):
                 _fmt_tokens(a.total_usage.total),
                 primary_model.split("-")[1] if "-" in primary_model else primary_model,
                 _fmt_cost(a.estimated_cost),
+                outcome_text,
             )
 
     def _populate_subagents_desc_table(self) -> None:
@@ -619,8 +652,18 @@ class SpendApp(App):
             return
         table = self.query_one("#skills-table", DataTable)
         table.cursor_type = "row"
-        table.add_columns("Skill", "Uses", "Avg Cost", "Cost Delta", "Cache Hit", "Cache R:W", "Avg Dur", "Avg Turns")
+        table.add_columns("Skill", "Uses", "Avg Cost", "Cost Delta", "Cache Hit", "Cache R:W", "Avg Dur", "Avg Turns", "Avg Outcome")
+        from claude_spend.effectiveness import ACHIEVED_OUTCOMES
+        eff_map = self._eff_lookup()
         for a in self.data.skill_types:
+            effs = [eff_map[sid] for sid in a.session_ids if sid in eff_map]
+            if effs:
+                achieved = sum(1 for e in effs if e.outcome in ACHIEVED_OUTCOMES)
+                rate = achieved / len(effs) * 100
+                color = "green" if rate >= 70 else "dark_orange" if rate >= 50 else "red"
+                outcome_text = Text(f"{rate:.0f}%", style=color)
+            else:
+                outcome_text = Text("—", style="dim")
             table.add_row(
                 a.skill_name,
                 str(a.invocation_count),
@@ -630,6 +673,7 @@ class SpendApp(App):
                 _fmt_cache_rw(a.avg_cache_rw_ratio),
                 _fmt_duration(a.avg_duration_minutes),
                 str(a.avg_turn_count),
+                outcome_text,
             )
 
     def _populate_friction_table(self) -> None:
