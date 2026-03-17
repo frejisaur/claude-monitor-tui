@@ -64,6 +64,20 @@ class SessionMeta:
     tool_counts: dict[str, int] = field(default_factory=dict)
     input_tokens: int = 0
     output_tokens: int = 0
+    # Extended fields for effectiveness tracking
+    user_interruptions: int = 0
+    tool_errors: int = 0
+    tool_error_categories: dict[str, int] = field(default_factory=dict)
+    git_commits: int = 0
+    git_pushes: int = 0
+    lines_added: int = 0
+    lines_removed: int = 0
+    files_modified: int = 0
+    uses_task_agent: bool = False
+    uses_mcp: bool = False
+    uses_web_search: bool = False
+    user_message_count: int = 0
+    assistant_message_count: int = 0
 
 
 def _parse_start_time(time_str: str) -> datetime:
@@ -108,6 +122,19 @@ def load_session_metas(claude_dir: str, days: int | None = 30) -> list[SessionMe
             tool_counts=raw.get("tool_counts", {}),
             input_tokens=raw.get("input_tokens", 0),
             output_tokens=raw.get("output_tokens", 0),
+            user_interruptions=raw.get("user_interruptions", 0),
+            tool_errors=raw.get("tool_errors", 0),
+            tool_error_categories=raw.get("tool_error_categories", {}),
+            git_commits=raw.get("git_commits", 0),
+            git_pushes=raw.get("git_pushes", 0),
+            lines_added=raw.get("lines_added", 0),
+            lines_removed=raw.get("lines_removed", 0),
+            files_modified=raw.get("files_modified", 0),
+            uses_task_agent=raw.get("uses_task_agent", False),
+            uses_mcp=raw.get("uses_mcp", False),
+            uses_web_search=raw.get("uses_web_search", False),
+            user_message_count=raw.get("user_message_count", 0),
+            assistant_message_count=raw.get("assistant_message_count", 0),
         ))
 
     results.sort(key=lambda s: s.start_time, reverse=True)

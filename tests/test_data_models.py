@@ -1,3 +1,5 @@
+import json
+
 from claude_spend.data import TokenUsage, PRICING, calculate_cost, resolve_model_id
 
 
@@ -188,6 +190,42 @@ def test_aggregate_by_skill_empty():
     from claude_spend.data import aggregate_by_skill
     aggs = aggregate_by_skill([], 0.0)
     assert aggs == []
+
+
+def test_session_meta_extended_fields(tmp_claude_dir, sample_session_meta):
+    """Extended session-meta fields are loaded."""
+    sample_session_meta.update({
+        "user_interruptions": 3,
+        "tool_errors": 2,
+        "tool_error_categories": {"User Rejected": 1, "Other": 1},
+        "git_commits": 5,
+        "git_pushes": 1,
+        "lines_added": 200,
+        "lines_removed": 50,
+        "files_modified": 4,
+        "uses_task_agent": True,
+        "uses_mcp": False,
+        "uses_web_search": True,
+        "user_message_count": 10,
+        "assistant_message_count": 20,
+    })
+    meta_dir = tmp_claude_dir / "usage-data" / "session-meta"
+    with open(meta_dir / "abc-123.json", "w") as f:
+        json.dump(sample_session_meta, f)
+
+    from claude_spend.data import load_session_metas
+    metas = load_session_metas(str(tmp_claude_dir))
+    m = metas[0]
+    assert m.user_interruptions == 3
+    assert m.tool_errors == 2
+    assert m.tool_error_categories == {"User Rejected": 1, "Other": 1}
+    assert m.git_commits == 5
+    assert m.lines_added == 200
+    assert m.lines_removed == 50
+    assert m.files_modified == 4
+    assert m.uses_task_agent is True
+    assert m.user_message_count == 10
+    assert m.assistant_message_count == 20
 
 
 def test_aggregate_by_skill_whitespace_name(tmp_path):
