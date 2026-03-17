@@ -481,7 +481,7 @@ class DashboardData:
     parse_errors: int = 0
     # Effectiveness layer
     effectiveness: list = field(default_factory=list)
-    effectiveness_agg: object = None
+    effectiveness_agg: object | None = None
     facets_loaded: int = 0
     proxied_count: int = 0
 

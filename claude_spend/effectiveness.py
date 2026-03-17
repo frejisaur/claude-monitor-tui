@@ -7,6 +7,8 @@ import json
 import os
 from dataclasses import dataclass, field
 
+from claude_spend.data import SessionMeta, SessionSummary
+
 
 @dataclass
 class SessionFacet:
@@ -54,9 +56,6 @@ def load_facets(claude_dir: str) -> dict[str, SessionFacet]:
         )
 
     return result
-
-
-from claude_spend.data import SessionMeta, SessionSummary
 
 
 @dataclass
@@ -141,15 +140,6 @@ def build_session_effectiveness(
         efficiency_score=efficiency,
         friction_counts=friction,
     )
-
-
-@dataclass
-class CategoryStats:
-    sessions: int = 0
-    avg_cost: float = 0.0
-    avg_duration: int = 0
-    achievement_rate: float = 0.0
-    avg_efficiency: float = 0.0
 
 
 @dataclass
