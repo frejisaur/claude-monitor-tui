@@ -420,12 +420,42 @@ class SpendApp(App):
         else:
             table.sort(col_key, key=lambda val: str(val).lower(), reverse=reverse)
 
+    def _eff_lookup(self) -> dict[str, object]:
+        """Build session_id -> SessionEffectiveness lookup."""
+        return {e.session_id: e for e in self.data.effectiveness}
+
+    @staticmethod
+    def _fmt_outcome(eff) -> Text:
+        outcome_colors = {
+            "fully_achieved": ("fully", "green"),
+            "mostly_achieved": ("mostly", "yellow"),
+            "partially_achieved": ("partial", "dark_orange"),
+            "not_achieved": ("not", "red"),
+            "likely_achieved": ("~likely", "dim green"),
+            "unclear": ("~unclear", "dim"),
+            "likely_not_achieved": ("~not", "dim red"),
+        }
+        label, color = outcome_colors.get(eff.outcome, (eff.outcome, "dim"))
+        return Text(label, style=color)
+
+    @staticmethod
+    def _fmt_friction_count(eff) -> Text:
+        total = sum(eff.friction_counts.values()) if eff.friction_counts else 0
+        if total == 0:
+            return Text("")
+        color = "dark_orange" if total <= 2 else "red"
+        return Text(str(total), style=color)
+
     def _populate_sessions_table(self) -> None:
         table = self.query_one("#sessions-table", DataTable)
         table.cursor_type = "row"
-        table.add_columns("Date", "Project", "First Prompt", "Duration", "Tokens", "Cost", "Skills", "Cache%")
+        table.add_columns("Date", "Project", "First Prompt", "Duration", "Tokens", "Cost", "Skills", "Cache%", "Outcome", "Friction")
         self._sessions_ordered = sorted(self.data.sessions, key=lambda x: x.start_time, reverse=True)
+        eff_map = self._eff_lookup()
         for i, s in enumerate(self._sessions_ordered):
+            eff = eff_map.get(s.session_id)
+            outcome_text = self._fmt_outcome(eff) if eff else Text("—", style="dim")
+            friction_text = self._fmt_friction_count(eff) if eff else Text("")
             table.add_row(
                 s.start_time.strftime("%Y-%m-%d %H:%M"),
                 s.project_name[:25],
@@ -435,6 +465,8 @@ class SpendApp(App):
                 _fmt_cost(s.estimated_cost),
                 str(len(s.skill_invocations)),
                 _fmt_cache_pct(s.cache_hit_ratio),
+                outcome_text,
+                friction_text,
                 key=str(i),
             )
 
