@@ -9,6 +9,10 @@ import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from claude_spend.effectiveness import SessionEffectiveness, EffectivenessAggregates
 
 # Pricing in $/MTok
 PRICING: dict[str, dict[str, float]] = {
@@ -479,9 +483,9 @@ class DashboardData:
     total_tokens: int = 0
     baseline_avg_cost: float = 0.0
     parse_errors: int = 0
-    # Effectiveness layer
-    effectiveness: list = field(default_factory=list)
-    effectiveness_agg: object | None = None
+    # Effectiveness layer (types use TYPE_CHECKING to avoid circular import)
+    effectiveness: list[SessionEffectiveness] = field(default_factory=list)
+    effectiveness_agg: EffectivenessAggregates | None = None
     facets_loaded: int = 0
     proxied_count: int = 0
 

@@ -20,6 +20,7 @@ from rich.text import Text
 import math
 
 from claude_spend.data import load_all, DashboardData, calculate_cost, TokenUsage, PRICING, FALLBACK_MODEL
+from claude_spend.effectiveness import ACHIEVED_OUTCOMES
 
 
 def _fmt_tokens(n: int) -> str:
@@ -149,7 +150,7 @@ _NUMERIC_COLUMNS: dict[str, callable] = {
     "Friction": _parse_int_str,
     "Avg Outcome": _parse_pct_str,
     "Achievement Rate": _parse_pct_str,
-    "Efficiency": lambda s: float(str(s).replace("x", "").replace("n/a", "0")),
+    "Efficiency": lambda s: float(str(s).replace("x", "").replace("n/a", "0")) if str(s).strip() else 0.0,
     "% Sessions": _parse_pct_str,
     "Count": _parse_int_str,
     "Avg Extra Cost": lambda s: float(str(s).replace("+", "").replace("$", "")) if str(s).strip() else 0.0,
@@ -570,7 +571,6 @@ class SpendApp(App):
         table.cursor_type = "row"
         table.add_columns("Type", "Calls", "Avg Tokens", "Total Tokens", "Primary Model", "Cost", "Avg Outcome")
 
-        from claude_spend.effectiveness import ACHIEVED_OUTCOMES
         type_sessions: dict[str, set[str]] = {}
         for c in self.data.all_subagent_calls:
             type_sessions.setdefault(c.subagent_type, set()).add(c.session_id)
@@ -653,7 +653,6 @@ class SpendApp(App):
         table = self.query_one("#skills-table", DataTable)
         table.cursor_type = "row"
         table.add_columns("Skill", "Uses", "Avg Cost", "Cost Delta", "Cache Hit", "Cache R:W", "Avg Dur", "Avg Turns", "Avg Outcome")
-        from claude_spend.effectiveness import ACHIEVED_OUTCOMES
         eff_map = self._eff_lookup()
         for a in self.data.skill_types:
             effs = [eff_map[sid] for sid in a.session_ids if sid in eff_map]
