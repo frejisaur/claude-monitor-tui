@@ -5,6 +5,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -478,6 +479,11 @@ class DashboardData:
     total_tokens: int = 0
     baseline_avg_cost: float = 0.0
     parse_errors: int = 0
+    # Effectiveness layer
+    effectiveness: list = field(default_factory=list)
+    effectiveness_agg: object = None
+    facets_loaded: int = 0
+    proxied_count: int = 0
 
 
 def _build_jsonl_index(claude_dir: str) -> dict[str, str]:
@@ -603,6 +609,40 @@ def load_all(claude_dir: str, days: int | None = 30) -> DashboardData:
         ))
         subagent_aggs.sort(key=lambda a: a.estimated_cost, reverse=True)
 
+    # Effectiveness layer
+    from claude_spend.effectiveness import (
+        load_facets, build_session_effectiveness, aggregate_effectiveness,
+    )
+    facets = load_facets(claude_dir)
+
+    meta_by_id = {m.session_id: m for m in metas}
+    durations = [m.duration_minutes for m in metas if m.duration_minutes > 0]
+    median_dur = statistics.median(durations) if durations else 30
+
+    # First pass: compute category avg costs from faceted sessions
+    cat_costs: dict[str, list[float]] = {}
+    for s in sessions:
+        f = facets.get(s.session_id)
+        if f and f.goal_categories:
+            for cat in f.goal_categories:
+                cat_costs.setdefault(cat, []).append(s.estimated_cost)
+    category_avg_costs = {cat: sum(costs) / len(costs) for cat, costs in cat_costs.items()}
+
+    # Second pass: build effectiveness records
+    effectiveness_records = []
+    for s in sessions:
+        meta = meta_by_id.get(s.session_id)
+        if not meta:
+            continue
+        eff = build_session_effectiveness(
+            session=s, meta=meta, facet=facets.get(s.session_id),
+            category_avg_costs=category_avg_costs, median_duration=int(median_dur),
+        )
+        effectiveness_records.append(eff)
+
+    sessions_by_id = {s.session_id: s for s in sessions}
+    eff_agg = aggregate_effectiveness(effectiveness_records, sessions_by_id, meta_by_id)
+
     return DashboardData(
         sessions=sessions,
         daily=aggregate_by_day(sessions),
@@ -615,4 +655,8 @@ def load_all(claude_dir: str, days: int | None = 30) -> DashboardData:
         total_tokens=total_tokens,
         baseline_avg_cost=baseline_avg_cost,
         parse_errors=total_parse_errors,
+        effectiveness=effectiveness_records,
+        effectiveness_agg=eff_agg,
+        facets_loaded=len(facets),
+        proxied_count=eff_agg.proxied_count,
     )

@@ -176,6 +176,42 @@ def test_aggregate_effectiveness():
     assert agg.category_stats["implementation"]["avg_duration"] == 30
 
 
+def test_load_all_includes_effectiveness(tmp_claude_dir, sample_session_meta, sample_facet):
+    """load_all() populates effectiveness data when facets exist."""
+    # Write session-meta
+    meta_dir = tmp_claude_dir / "usage-data" / "session-meta"
+    with open(meta_dir / "abc-123.json", "w") as f:
+        json.dump(sample_session_meta, f)
+
+    # Write facet
+    facets_dir = tmp_claude_dir / "usage-data" / "facets"
+    facets_dir.mkdir(parents=True, exist_ok=True)
+    with open(facets_dir / "abc-123.json", "w") as f:
+        json.dump(sample_facet, f)
+
+    from claude_spend.data import load_all
+    data = load_all(str(tmp_claude_dir))
+    assert data.facets_loaded == 1
+    assert len(data.effectiveness) == 1
+    assert data.effectiveness[0].outcome == "fully_achieved"
+    assert data.effectiveness[0].outcome_source == "facet"
+
+
+def test_load_all_no_facets(tmp_claude_dir, sample_session_meta):
+    """load_all() uses proxy when no facets exist."""
+    meta_dir = tmp_claude_dir / "usage-data" / "session-meta"
+    sample_session_meta.update({"git_commits": 3, "tool_errors": 0, "user_interruptions": 0})
+    with open(meta_dir / "abc-123.json", "w") as f:
+        json.dump(sample_session_meta, f)
+
+    from claude_spend.data import load_all
+    data = load_all(str(tmp_claude_dir))
+    assert data.facets_loaded == 0
+    assert data.proxied_count == 1
+    assert len(data.effectiveness) == 1
+    assert data.effectiveness[0].outcome_source == "proxy"
+
+
 def test_build_effectiveness_without_facet():
     from claude_spend.data import SessionMeta, SessionSummary
     from claude_spend.effectiveness import build_session_effectiveness
