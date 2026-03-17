@@ -234,6 +234,10 @@ class SpendApp(App):
     #subagents-tables DataTable {
         width: 1fr;
     }
+    #effectiveness-numbers {
+        height: auto;
+        max-height: 7;
+    }
     """
 
     BINDINGS = [
@@ -258,7 +262,7 @@ class SpendApp(App):
             yield Footer()
             return
 
-        with TabbedContent("Overview", "Sessions", "Projects", "Models", "Subagents", "Skills"):
+        with TabbedContent("Overview", "Effectiveness", "Sessions", "Projects", "Models", "Subagents", "Skills"):
             with TabPane("Overview", id="tab-overview"):
                 with Horizontal(id="overview-numbers"):
                     yield BigNumber("Total Tokens", _fmt_tokens(self.data.total_tokens))
@@ -268,6 +272,25 @@ class SpendApp(App):
                 yield PlotextPlot(id="costs-chart")
                 yield Static("[#666666]Cost by token type per model[/#666666]", classes="table-help")
                 yield DataTable(id="costs-table")
+
+            with TabPane("Effectiveness", id="tab-effectiveness"):
+                if self.data.effectiveness_agg and self.data.effectiveness:
+                    agg = self.data.effectiveness_agg
+                    with Horizontal(id="effectiveness-numbers"):
+                        yield BigNumber("Analyzed", f"{agg.faceted_count}f / {agg.proxied_count}p / {agg.total_sessions}")
+                        yield BigNumber("Achievement", f"{agg.achievement_rate * 100:.0f}%")
+                        yield BigNumber("Avg Friction", f"{agg.avg_friction:.1f}/session")
+                        eff_label = f"{agg.avg_efficiency:.2f}x" if agg.avg_efficiency > 0 else "n/a"
+                        yield BigNumber("Avg Efficiency", eff_label)
+                    yield Static("[#666666]Friction types ranked by frequency[/#666666]", classes="table-help")
+                    yield DataTable(id="friction-table")
+                    yield Static("[#666666]Efficiency = session cost / category avg cost[/#666666]", classes="table-help")
+                    yield DataTable(id="category-table")
+                else:
+                    yield Static(
+                        "[dim]No effectiveness data available. Run /insights to generate session facets.[/dim]",
+                        id="no-effectiveness",
+                    )
 
             with TabPane("Sessions", id="tab-sessions"):
                 with Horizontal(id="sessions-numbers"):
@@ -347,19 +370,38 @@ class SpendApp(App):
 
     def on_mount(self) -> None:
         self.title = f"Claude Spend — {self.days_label}"
+        self._charts_populated: set[str] = set()
         if self.data.sessions:
+            # Populate tables (render fine in hidden tabs)
             self._populate_sessions_table()
-            self._populate_sessions_heatmap()
             self._populate_projects_table()
             self._populate_models_table()
             self._populate_subagents_table()
             self._populate_subagents_desc_table()
             self._populate_costs_table()
-            self._populate_models_chart()
-            self._populate_subagents_chart()
-            self._populate_costs_chart()
-            self._populate_skills_chart()
             self._populate_skills_table()
+            self._populate_friction_table()
+            self._populate_category_table()
+            # Only populate overview chart immediately (visible on mount)
+            self._populate_costs_chart()
+            self._charts_populated.add("tab-overview")
+
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Populate charts on first tab activation so they render at correct size."""
+        if not self.data.sessions:
+            return
+        pane_id = event.pane.id
+        if pane_id in self._charts_populated:
+            return
+        self._charts_populated.add(pane_id)
+        chart_populators = {
+            "tab-sessions": self._populate_sessions_heatmap,
+            "tab-models": self._populate_models_chart,
+            "tab-subagents": self._populate_subagents_chart,
+            "tab-skills": self._populate_skills_chart,
+        }
+        if pane_id in chart_populators:
+            chart_populators[pane_id]()
 
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
         """Sort table by clicked column header, toggling direction on re-click."""
@@ -558,6 +600,44 @@ class SpendApp(App):
                 str(a.avg_turn_count),
             )
 
+    def _populate_friction_table(self) -> None:
+        agg = self.data.effectiveness_agg
+        if not agg or not agg.friction_totals:
+            return
+        table = self.query_one("#friction-table", DataTable)
+        table.cursor_type = "row"
+        table.add_columns("Friction Type", "Count", "% Sessions", "Avg Extra Cost")
+        total_sessions = agg.total_sessions or 1
+        for ftype, count in sorted(agg.friction_totals.items(), key=lambda x: x[1], reverse=True):
+            pct = (count / total_sessions) * 100
+            avg_extra = agg.friction_avg_extra_cost.get(ftype, 0.0)
+            cost_color = "red" if avg_extra > 2.0 else "dark_orange" if avg_extra > 0.5 else "green"
+            table.add_row(
+                ftype, str(count), f"{pct:.0f}%",
+                Text(f"+{_fmt_cost(avg_extra)}", style=cost_color),
+            )
+
+    def _populate_category_table(self) -> None:
+        agg = self.data.effectiveness_agg
+        if not agg or not agg.category_stats:
+            return
+        table = self.query_one("#category-table", DataTable)
+        table.cursor_type = "row"
+        table.add_columns("Category", "Sessions", "Avg Cost", "Avg Duration", "Achievement Rate", "Efficiency")
+        for cat, stats in sorted(agg.category_stats.items(), key=lambda x: x[1]["sessions"], reverse=True):
+            ach_pct = stats["achievement_rate"] * 100
+            ach_color = "green" if ach_pct >= 70 else "dark_orange" if ach_pct >= 50 else "red"
+            eff = stats["avg_efficiency"]
+            eff_color = "green" if eff <= 1.0 else "dark_orange" if eff <= 1.5 else "red"
+            table.add_row(
+                cat,
+                str(stats["sessions"]),
+                _fmt_cost(stats["avg_cost"]),
+                _fmt_duration(stats["avg_duration"]),
+                Text(f"{ach_pct:.0f}%", style=ach_color),
+                Text(f"{eff:.2f}x", style=eff_color) if eff > 0 else Text("n/a", style="dim"),
+            )
+
     def _populate_costs_chart(self) -> None:
         if not self.data.daily:
             return
@@ -695,6 +775,7 @@ class SpendApp(App):
         detail.update(content)
         detail.display = True
         self._detail_row_idx = idx
+        detail.scroll_visible()
 
     def action_hide_detail(self) -> None:
         try:
