@@ -31,8 +31,8 @@ def test_calculate_cost_opus():
         cache_read_tokens=1_000_000,
     )
     cost = calculate_cost(usage, "claude-opus-4-6")
-    # $15 input + $75 output + $18.75 cache_write + $1.50 cache_read = $110.25
-    assert abs(cost - 110.25) < 0.01
+    # $5 input + $25 output + $6.25 cache_write + $0.50 cache_read = $36.75
+    assert abs(cost - 36.75) < 0.01
 
 
 def test_calculate_cost_sonnet():
@@ -55,8 +55,8 @@ def test_calculate_cost_haiku():
         cache_read_tokens=1_000_000,
     )
     cost = calculate_cost(usage, "claude-haiku-4-5-20251001")
-    # $0.80 + $4.00 + $1.00 + $0.08 = $5.88
-    assert abs(cost - 5.88) < 0.01
+    # $1.00 + $5.00 + $1.25 + $0.10 = $7.35
+    assert abs(cost - 7.35) < 0.01
 
 
 def test_calculate_cost_unknown_model_falls_back_to_sonnet():
