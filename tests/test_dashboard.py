@@ -628,3 +628,21 @@ async def test_session_detail_shows_plan_usage():
         detail = app.query_one("#session-detail", Static)
         content = str(detail.render())
         assert "PLAN USAGE" in content
+
+
+def test_main_accepts_plan_arg(monkeypatch):
+    """main() should accept --plan argument without crashing."""
+    import sys
+    from unittest.mock import patch, MagicMock
+
+    monkeypatch.setattr(sys, "argv", ["claude-monitor", "--days", "7", "--plan", "pro"])
+    with patch("claude_spend.dashboard.load_all") as mock_load, \
+         patch("claude_spend.dashboard.SpendApp") as MockApp, \
+         patch("os.path.isdir", return_value=True):
+        mock_load.return_value = MagicMock()
+        mock_instance = MockApp.return_value
+        mock_instance.run = MagicMock()
+        from claude_spend.dashboard import main
+        main()
+    # Verify SpendApp was called (it received data, label, and quota_state)
+    assert MockApp.called

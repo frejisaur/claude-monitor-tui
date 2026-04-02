@@ -1393,6 +1393,7 @@ class SpendApp(App):
 def main():
     parser = argparse.ArgumentParser(description="Claude Spend — Token usage dashboard")
     parser.add_argument("--days", default="30", help="Number of days to show, or 'all'")
+    parser.add_argument("--plan", default=None, help="Plan tier: pro, max5, max20")
     args = parser.parse_args()
 
     claude_dir = os.path.expanduser("~/.claude")
@@ -1412,7 +1413,26 @@ def main():
             sys.exit(1)
 
     data = load_all(claude_dir, days=days)
-    app = SpendApp(data, days_label)
+
+    # Load quota state
+    from claude_spend.plan_config import get_active_budget, save_plan_config, load_plan_config, DEFAULT_PLAN
+    from claude_spend.usage_api import fetch_quota_snapshot
+    from claude_spend.hook import load_usage_log
+    from claude_spend.quota import build_quota_state
+
+    config_dir = os.path.expanduser("~/.claude-spend")
+    if args.plan:
+        current = load_plan_config(config_dir)
+        if current["plan"] != args.plan:
+            save_plan_config(config_dir, plan=args.plan)
+
+    budget = get_active_budget(config_dir)
+    oauth_snap = fetch_quota_snapshot()
+    log_path = os.path.join(config_dir, "usage-log.jsonl")
+    hook_entries = load_usage_log(log_path)
+    quota_state = build_quota_state(oauth_snap, hook_entries, budget)
+
+    app = SpendApp(data, days_label, quota_state=quota_state)
     app.run()
 
 
