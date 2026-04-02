@@ -502,3 +502,34 @@ def test_quota_card_renders_all_parts():
     assert "78%" in content
     assert "$3.40" in content
     assert "$4.40" in content
+
+
+@pytest.mark.asyncio
+async def test_overview_quota_gauges_render():
+    """Overview tab should show QuotaGauge widgets when quota data is provided."""
+    from claude_spend.dashboard import SpendApp, QuotaGauge
+    from claude_spend.quota import QuotaState, DataSource
+    from claude_spend.plan_config import PLAN_BUDGETS
+
+    data = _make_test_data()
+    quota = QuotaState(
+        source=DataSource.HOOK, session_pct=0.45, weekly_pct=0.20,
+        sonnet_weekly_pct=0.0, estimated_5h_cost=3.96, estimated_weekly_cost=20.0,
+        budget=PLAN_BUDGETS["max5"],
+    )
+    app = SpendApp(data, "Last 7 days", quota_state=quota)
+    async with app.run_test(size=(120, 40)) as pilot:
+        gauges = app.query("QuotaGauge")
+        assert len(gauges) >= 2  # at least 5h + weekly
+
+
+@pytest.mark.asyncio
+async def test_overview_no_quota_no_gauges():
+    """Overview tab should NOT show gauges when no quota data."""
+    from claude_spend.dashboard import SpendApp, QuotaGauge
+
+    data = _make_test_data()
+    app = SpendApp(data, "Last 7 days", quota_state=None)
+    async with app.run_test(size=(120, 40)) as pilot:
+        gauges = app.query("QuotaGauge")
+        assert len(gauges) == 0

@@ -23,6 +23,7 @@ import math
 
 from claude_spend.data import load_all, DashboardData, calculate_cost, TokenUsage, PRICING, FALLBACK_MODEL
 from claude_spend.effectiveness import ACHIEVED_OUTCOMES
+from claude_spend.quota import QuotaState, DataSource
 
 
 def _fmt_tokens(n: int) -> str:
@@ -560,6 +561,19 @@ class SpendApp(App):
         height: auto;
         max-height: 7;
     }
+    #overview-quota {
+        height: auto;
+        max-height: 5;
+    }
+    #overview-quota QuotaGauge {
+        width: 1fr;
+        padding: 0 2;
+    }
+    #overview-plan-label {
+        height: auto;
+        text-align: center;
+        margin: 0 0 1 0;
+    }
     """
 
     BINDINGS = [
@@ -568,10 +582,11 @@ class SpendApp(App):
         Binding("?", "help", "Help"),
     ]
 
-    def __init__(self, data: DashboardData, days_label: str):
+    def __init__(self, data: DashboardData, days_label: str, quota_state: QuotaState | None = None):
         super().__init__()
         self.data = data
         self.days_label = days_label
+        self.quota_state = quota_state
         self._sort_state: dict[str, tuple[str, bool]] = {}
 
     def compose(self) -> ComposeResult:
@@ -597,6 +612,20 @@ class SpendApp(App):
                     else:
                         ach_label = "—"
                     yield BigNumber("Achievement", ach_label)
+
+                if self.quota_state and self.quota_state.source != DataSource.NONE:
+                    qs = self.quota_state
+                    estimated = qs.source == DataSource.HOOK
+                    reset_5h = self._fmt_reset(qs.session_reset_at) if qs.session_reset_at else ""
+                    reset_7d = self._fmt_reset(qs.weekly_reset_at) if qs.weekly_reset_at else ""
+                    with Horizontal(id="overview-quota"):
+                        yield QuotaGauge("5h Window", pct=qs.session_pct, reset_label=reset_5h, estimated=estimated)
+                        yield QuotaGauge("Weekly Quota", pct=qs.weekly_pct, reset_label=reset_7d, estimated=estimated)
+                        if qs.sonnet_weekly_pct > 0:
+                            yield QuotaGauge("Sonnet Weekly", pct=qs.sonnet_weekly_pct, reset_label=reset_7d, estimated=estimated)
+                    plan_label = qs.budget.name if qs.budget else "Unknown"
+                    price = f"${qs.budget.monthly_price}/mo" if qs.budget and qs.budget.monthly_price else ""
+                    yield Static(f"[dim]Plan: {plan_label} ({price})[/dim]", id="overview-plan-label")
 
                 yield PlotextPlot(id="costs-chart")
                 yield Static("[#666666]Cost by token type per model[/#666666]", classes="table-help")
@@ -752,6 +781,23 @@ class SpendApp(App):
     def _eff_lookup(self) -> dict[str, object]:
         """Build session_id -> SessionEffectiveness lookup."""
         return {e.session_id: e for e in self.data.effectiveness}
+
+    @staticmethod
+    def _fmt_reset(reset_at: datetime | None) -> str:
+        """Format a reset timestamp as a human-readable countdown."""
+        if not reset_at:
+            return ""
+        now = datetime.now(timezone.utc)
+        delta = reset_at - now
+        if delta.total_seconds() <= 0:
+            return "now"
+        hours = int(delta.total_seconds() // 3600)
+        minutes = int((delta.total_seconds() % 3600) // 60)
+        if hours >= 24:
+            days = hours // 24
+            hours = hours % 24
+            return f"{days}d {hours}h"
+        return f"{hours}h {minutes:02d}m"
 
     @staticmethod
     def _fmt_outcome(eff) -> Text:
