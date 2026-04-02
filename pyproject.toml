@@ -34,6 +34,8 @@ dev = [
 
 [project.scripts]
 claude-monitor = "claude_spend.dashboard:main"
+claude-spend-install-hook = "claude_spend.hook_install:main_install"
+claude-spend-uninstall-hook = "claude_spend.hook_install:main_uninstall"
 
 [project.urls]
 Homepage = "https://github.com/frejisaur/claude-monitor-tui"
