@@ -1320,6 +1320,33 @@ class SpendApp(App):
                     f"{_fmt_tokens(c.usage.total):>6} tok  {_fmt_cost(cost):>7}  [dim]{short_model}[/dim]"
                 )
 
+        # Plan usage
+        if self.quota_state and self.quota_state.source != DataSource.NONE and self.quota_state.budget:
+            budget = self.quota_state.budget
+            now = datetime.now(timezone.utc)
+            cutoff_5h = now - timedelta(hours=5)
+            cutoff_7d = now - timedelta(days=7)
+            total_5h = sum(s.estimated_cost for s in self.data.sessions if s.start_time >= cutoff_5h)
+            total_7d = sum(s.estimated_cost for s in self.data.sessions if s.start_time >= cutoff_7d)
+
+            session_5h_pct = session.estimated_cost / total_5h if total_5h > 0 and session.start_time >= cutoff_5h else 0.0
+            session_7d_pct = session.estimated_cost / total_7d if total_7d > 0 and session.start_time >= cutoff_7d else 0.0
+
+            effective_5h = session_5h_pct * self.quota_state.session_pct
+            effective_7d = session_7d_pct * self.quota_state.weekly_pct
+
+            bar_w = 5
+            fill_5h = int(effective_5h * bar_w)
+            fill_7d = int(effective_7d * bar_w)
+            bar_5h = "[green]" + "\u2588" * fill_5h + "[/green]" + "[dim]\u2591[/dim]" * (bar_w - fill_5h)
+            bar_7d = "[green]" + "\u2588" * fill_7d + "[/green]" + "[dim]\u2591[/dim]" * (bar_w - fill_7d)
+
+            lines.append("")
+            lines.append(
+                f"[dim]PLAN USAGE[/dim]  5h: {bar_5h} {effective_5h * 100:.0f}% of window   "
+                f"7d: {bar_7d} {effective_7d * 100:.1f}% of weekly"
+            )
+
         return "\n".join(lines)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:

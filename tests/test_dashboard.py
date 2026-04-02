@@ -602,3 +602,29 @@ async def test_limits_tab_no_data_shows_fallback():
         await pilot.pause()
         no_data = app.query_one("#no-limits-data")
         assert no_data is not None
+
+
+@pytest.mark.asyncio
+async def test_session_detail_shows_plan_usage():
+    """Session detail should include a PLAN USAGE line when quota data is available."""
+    from claude_spend.dashboard import SpendApp
+    from claude_spend.quota import QuotaState, DataSource
+    from claude_spend.plan_config import PLAN_BUDGETS
+    from textual.widgets import DataTable, Static
+
+    data = _make_test_data()
+    quota = QuotaState(
+        source=DataSource.HOOK, session_pct=0.78, weekly_pct=0.42,
+        estimated_5h_cost=6.86, estimated_weekly_cost=42.0,
+        budget=PLAN_BUDGETS["max5"],
+    )
+    app = SpendApp(data, "Last 7 days", quota_state=quota)
+    async with app.run_test(size=(120, 40)) as pilot:
+        sessions_table = app.query_one("#sessions-table", DataTable)
+        sessions_table.move_cursor(row=0)
+        sessions_table.action_select_cursor()
+        await pilot.pause()
+
+        detail = app.query_one("#session-detail", Static)
+        content = str(detail.render())
+        assert "PLAN USAGE" in content
