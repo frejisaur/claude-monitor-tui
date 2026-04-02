@@ -123,7 +123,7 @@ async def test_tab_switching():
 
     app = SpendApp(_make_test_data(), "Last 7 days")
     async with app.run_test(size=(120, 40)) as pilot:
-        for tab_name in ["Sessions", "Projects", "Models", "Subagents", "Skills", "Overview"]:
+        for tab_name in ["Sessions", "Limits", "Projects", "Models", "Subagents", "Skills", "Overview"]:
             tabs = app.query("Tab")
             for tab in tabs:
                 if tab_name in str(tab.label):
@@ -533,3 +533,72 @@ async def test_overview_no_quota_no_gauges():
     async with app.run_test(size=(120, 40)) as pilot:
         gauges = app.query("QuotaGauge")
         assert len(gauges) == 0
+
+
+@pytest.mark.asyncio
+async def test_limits_tab_renders_with_quota():
+    """Limits tab should render QuotaCards and recent sessions table."""
+    from claude_spend.dashboard import SpendApp, QuotaCard
+    from claude_spend.quota import QuotaState, DataSource
+    from claude_spend.plan_config import PLAN_BUDGETS
+    from textual.widgets import DataTable
+
+    # Build data with recent sessions so they fall within the 7-day window
+    now = datetime.now(timezone.utc)
+    sessions = []
+    for i, (proj, model, tokens) in enumerate([
+        ("alpha", "claude-opus-4-6", 50000),
+        ("beta", "claude-sonnet-4-6", 30000),
+    ]):
+        usage = TokenUsage(input_tokens=tokens, output_tokens=tokens // 2,
+                           cache_write_tokens=tokens // 10, cache_read_tokens=tokens * 2)
+        cost = calculate_cost(usage, model)
+        sessions.append(SessionSummary(
+            session_id=f"lim{i}", project_path=f"/code/{proj}", project_name=proj,
+            start_time=now - timedelta(hours=i + 1),
+            duration_minutes=30, first_prompt=f"Task {i}",
+            usage_by_model={model: usage}, tool_counts={"Bash": 3},
+            subagent_calls=[], skill_invocations=[], turn_count=10,
+            estimated_cost=cost,
+        ))
+    data = DashboardData(
+        sessions=sessions,
+        daily=aggregate_by_day(sessions),
+        projects=aggregate_by_project(sessions),
+        models=aggregate_by_model(sessions),
+        subagent_types=aggregate_by_subagent_type([]),
+        all_subagent_calls=[],
+        skill_types=aggregate_by_skill(sessions, 0.0),
+        baseline_avg_cost=0.0,
+        total_cost=sum(s.estimated_cost for s in sessions),
+        total_tokens=sum(s.total_usage.total for s in sessions),
+    )
+    quota = QuotaState(
+        source=DataSource.HOOK, session_pct=0.78, weekly_pct=0.42,
+        sonnet_weekly_pct=0.0, estimated_5h_cost=6.86, estimated_weekly_cost=42.0,
+        budget=PLAN_BUDGETS["max5"],
+    )
+    app = SpendApp(data, "Last 7 days", quota_state=quota)
+    async with app.run_test(size=(120, 40)) as pilot:
+        cards = app.query("QuotaCard")
+        assert len(cards) >= 2
+        limits_table = app.query_one("#limits-sessions-table", DataTable)
+        assert limits_table.row_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_limits_tab_no_data_shows_fallback():
+    """Limits tab should show setup message when no quota data."""
+    from claude_spend.dashboard import SpendApp
+
+    data = _make_test_data()
+    app = SpendApp(data, "Last 7 days", quota_state=None)
+    async with app.run_test(size=(120, 40)) as pilot:
+        tabs = app.query("Tab")
+        for tab in tabs:
+            if "Limits" in str(tab.label):
+                await pilot.click(type(tab), offset=(2, 0))
+                break
+        await pilot.pause()
+        no_data = app.query_one("#no-limits-data")
+        assert no_data is not None

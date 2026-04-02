@@ -574,6 +574,20 @@ class SpendApp(App):
         text-align: center;
         margin: 0 0 1 0;
     }
+    #limits-plan-label {
+        height: auto;
+        margin: 0 1;
+        padding: 0 1;
+    }
+    #limits-cards {
+        height: auto;
+        max-height: 8;
+    }
+    #limits-cards QuotaCard {
+        width: 1fr;
+        padding: 0 1;
+        border: tall $surface-lighten-2;
+    }
     """
 
     BINDINGS = [
@@ -600,7 +614,7 @@ class SpendApp(App):
             yield Footer()
             return
 
-        with TabbedContent("Overview", "Effectiveness", "Sessions", "Projects", "Models", "Subagents", "Skills"):
+        with TabbedContent("Overview", "Effectiveness", "Sessions", "Limits", "Projects", "Models", "Subagents", "Skills"):
             with TabPane("Overview", id="tab-overview"):
                 with Horizontal(id="overview-numbers"):
                     yield BigNumber("Total Tokens", _fmt_tokens(self.data.total_tokens))
@@ -684,6 +698,46 @@ class SpendApp(App):
                 yield DataTable(id="sessions-table")
                 yield Static(id="session-detail")
 
+            with TabPane("Limits", id="tab-limits"):
+                if self.quota_state and self.quota_state.source != DataSource.NONE:
+                    qs = self.quota_state
+                    estimated = qs.source == DataSource.HOOK
+                    budget = qs.budget
+                    plan_label = budget.name if budget else "Unknown"
+                    price = f"${budget.monthly_price}/mo" if budget and budget.monthly_price else ""
+                    yield Static(f"[bold]Plan: {plan_label}[/bold]  [dim]({price})[/dim]", id="limits-plan-label")
+
+                    reset_5h = self._fmt_reset(qs.session_reset_at) if qs.session_reset_at else ""
+                    reset_7d = self._fmt_reset(qs.weekly_reset_at) if qs.weekly_reset_at else ""
+                    with Horizontal(id="limits-cards"):
+                        yield QuotaCard(
+                            title="5h Session Window", pct=qs.session_pct,
+                            reset_label=reset_5h, used=qs.estimated_5h_cost,
+                            budget=budget.five_hour_budget if budget else 0,
+                            estimated=estimated,
+                        )
+                        yield QuotaCard(
+                            title="Weekly All Models", pct=qs.weekly_pct,
+                            reset_label=reset_7d, used=qs.estimated_weekly_cost,
+                            budget=budget.weekly_budget if budget else 0,
+                            estimated=estimated,
+                        )
+                        if qs.sonnet_weekly_pct > 0:
+                            yield QuotaCard(
+                                title="Weekly Sonnet", pct=qs.sonnet_weekly_pct,
+                                reset_label=reset_7d, used=0.0, budget=0.0,
+                                estimated=estimated,
+                            )
+                    yield Static("[#666666]Recent sessions contributing to current windows[/#666666]", classes="table-help")
+                    yield DataTable(id="limits-sessions-table")
+                    yield PlotextPlot(id="limits-history-chart")
+                else:
+                    yield Static(
+                        "[dim]No usage data. Run `claude-spend-install-hook` to track usage, "
+                        "or login with `claude login` for real-time quota.[/dim]",
+                        id="no-limits-data",
+                    )
+
             with TabPane("Projects", id="tab-projects"):
                 yield Static("[#666666]Tokens = total across all models[/#666666]", classes="table-help")
                 yield DataTable(id="projects-table")
@@ -740,6 +794,7 @@ class SpendApp(App):
             self._populate_skills_table()
             self._populate_friction_table()
             self._populate_category_table()
+            self._populate_limits_table()
             # Only populate overview chart immediately (visible on mount)
             self._populate_costs_chart()
             self._charts_populated.add("tab-overview")
@@ -754,6 +809,7 @@ class SpendApp(App):
         self._charts_populated.add(pane_id)
         chart_populators = {
             "tab-sessions": self._populate_sessions_heatmap,
+            "tab-limits": self._populate_limits_chart,
             "tab-models": self._populate_models_chart,
             "tab-subagents": self._populate_subagents_chart,
             "tab-skills": self._populate_skills_chart,
@@ -1071,6 +1127,87 @@ class SpendApp(App):
                 Text(f"{ach_pct:.0f}%", style=ach_color),
                 Text(f"{eff:.2f}x", style=eff_color) if eff > 0 else Text("n/a", style="dim"),
             )
+
+    def _populate_limits_table(self) -> None:
+        """Populate the Limits tab recent sessions table."""
+        if not self.quota_state or self.quota_state.source == DataSource.NONE:
+            return
+        try:
+            table = self.query_one("#limits-sessions-table", DataTable)
+        except Exception:
+            return
+
+        table.add_columns("Time", "Project", "Cost", "5h%", "7d%")
+
+        now = datetime.now(timezone.utc)
+        cutoff_5h = now - timedelta(hours=5)
+        cutoff_7d = now - timedelta(days=7)
+        budget = self.quota_state.budget
+
+        recent = [s for s in self.data.sessions if s.start_time >= cutoff_7d]
+
+        for s in recent[:20]:
+            delta = now - s.start_time
+            if delta.total_seconds() < 86400:
+                time_label = s.start_time.strftime("%H:%M")
+            elif delta.days == 1:
+                time_label = "yesterday"
+            else:
+                time_label = f"{delta.days}d ago"
+
+            in_5h = s.start_time >= cutoff_5h
+            pct_5h_val = (s.estimated_cost / budget.five_hour_budget * 100) if in_5h and budget and budget.five_hour_budget > 0 else 0
+            pct_5h = f"{pct_5h_val:.0f}%" if in_5h else "—"
+            pct_7d_val = (s.estimated_cost / budget.weekly_budget * 100) if budget and budget.weekly_budget > 0 else 0
+            pct_7d = f"{pct_7d_val:.1f}%"
+
+            table.add_row(time_label, s.project_name, _fmt_cost(s.estimated_cost), pct_5h, pct_7d)
+
+    def _populate_limits_chart(self) -> None:
+        """Populate historical quota utilization chart."""
+        try:
+            chart_widget = self.query_one("#limits-history-chart", PlotextPlot)
+        except Exception:
+            return
+        plt = chart_widget.plt
+        plt.title("Daily Peak 5h Quota (estimated)")
+        plt.xlabel("Date")
+        plt.ylabel("% of 5h budget")
+
+        if not self.quota_state or not self.quota_state.budget:
+            return
+
+        budget_5h = self.quota_state.budget.five_hour_budget
+        if budget_5h <= 0:
+            return
+
+        from claude_spend.data import SessionSummary
+
+        sessions_by_date: dict[str, list] = {}
+        for s in self.data.sessions:
+            date_str = s.start_time.strftime("%m/%d")
+            sessions_by_date.setdefault(date_str, []).append(s)
+
+        if len(sessions_by_date) < 2:
+            return
+
+        daily_peaks: dict[str, float] = {}
+        for date_str, day_sessions in sessions_by_date.items():
+            sorted_sessions = sorted(day_sessions, key=lambda s: s.start_time)
+            max_cost = 0.0
+            for anchor in sorted_sessions:
+                window_end = anchor.start_time + timedelta(hours=5)
+                window_cost = sum(
+                    s.estimated_cost for s in sorted_sessions
+                    if anchor.start_time <= s.start_time < window_end
+                )
+                max_cost = max(max_cost, window_cost)
+            daily_peaks[date_str] = max_cost
+
+        dates = sorted(daily_peaks.keys())
+        pcts = [min(100, daily_peaks[d] / budget_5h * 100) for d in dates]
+        plt.bar(dates, pcts, width=0.8)
+        plt.ylim(0, max(100, max(pcts) * 1.1))
 
     def _populate_costs_chart(self) -> None:
         if not self.data.daily:
