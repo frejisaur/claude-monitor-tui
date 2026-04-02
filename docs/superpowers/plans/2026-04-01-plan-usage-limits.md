@@ -12,6 +12,19 @@
 
 **Visual validation:** Every UI task includes a TUI screenshot step (using `app.save_screenshot()` in Textual pilot tests) to validate layout and rendering. Screenshots saved to `tests/screenshots/`.
 
+**Review fixes applied:** This plan incorporates fixes from adversarial review:
+- CRITICAL: Fixed historical chart to compute actual 5h sliding window peaks (not daily sums)
+- CRITICAL: Dedup uses tail-read of last 50 lines instead of loading entire log (O(1) vs O(n))
+- CRITICAL: Hook entries clearly documented as per-turn (not per-session) data
+- HIGH: `compute_rolling_window` accepts injectable `now` parameter for deterministic tests
+- HIGH: File locking (`fcntl.flock`) on usage-log writes for concurrent session safety
+- HIGH: Unified session contribution % calculation across Limits table and session detail
+- HIGH: OAuth response schema validation with runtime warning on unexpected shape
+- MEDIUM: `round()` instead of `int()` for percentage display
+- MEDIUM: Hook `main()` logs errors to `~/.claude-spend/hook.log`
+- MEDIUM: Added test for hook `main()` stdin parsing
+- MEDIUM: `--plan` only writes config when value differs from current
+
 ---
 
 ## File Structure
@@ -361,13 +374,12 @@ class TestAppendAndDedup:
 
 
 class TestRollingWindows:
-    def _make_entries(self):
+    def _make_entries(self, now):
         """Entries spanning 8 hours, $0.50 each, 8 total = $4.00."""
-        now = datetime.now(timezone.utc)
         entries = []
         for i in range(8):
             entries.append(UsageEntry(
-                ts=now - timedelta(hours=i),
+                ts=now - timedelta(hours=i + 0.5),  # offset by 30min to avoid boundary
                 session_id=f"s{i}", message_id=f"m{i}", model="claude-opus-4-6",
                 input_tokens=1000, output_tokens=200, cache_write_tokens=0,
                 cache_read_tokens=0, estimated_cost=0.50, project="test",
@@ -375,26 +387,67 @@ class TestRollingWindows:
         return entries
 
     def test_5h_window_sums_only_recent(self):
-        entries = self._make_entries()
-        # Entries at 0h,1h,2h,3h,4h are within 5h → 5 * $0.50 = $2.50
-        # Entries at 5h,6h,7h are outside
-        result = compute_rolling_window(entries, hours=5)
+        now = datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc)
+        entries = self._make_entries(now)
+        # Entries at 0.5h,1.5h,2.5h,3.5h,4.5h are within 5h (strict >)
+        # Entries at 5.5h,6.5h,7.5h are outside
+        result = compute_rolling_window(entries, hours=5, now=now)
         assert result.total_cost == pytest.approx(2.50, abs=0.01)
         assert result.entry_count == 5
 
     def test_7d_window_includes_all(self):
-        entries = self._make_entries()
-        result = compute_rolling_window(entries, hours=7 * 24)
+        now = datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc)
+        entries = self._make_entries(now)
+        result = compute_rolling_window(entries, hours=7 * 24, now=now)
         assert result.total_cost == pytest.approx(4.00, abs=0.01)
         assert result.entry_count == 8
 
     def test_empty_entries(self):
-        result = compute_rolling_window([], hours=5)
+        now = datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc)
+        result = compute_rolling_window([], hours=5, now=now)
         assert result.total_cost == 0.0
         assert result.entry_count == 0
 
 
 class TestSessionContributions:
+class TestHookMain:
+    def test_main_processes_stdin(self, sample_jsonl_path, tmp_path, monkeypatch):
+        """hook main() should read stdin JSON and append to usage log."""
+        import io
+        from claude_spend.hook import main as hook_main
+
+        log_path = str(tmp_path / "claude-spend" / "usage-log.jsonl")
+        monkeypatch.setattr("claude_spend.hook.os.path.expanduser", lambda p: str(tmp_path / "claude-spend" / "usage-log.jsonl") if "usage-log" in p else p)
+
+        stdin_data = json.dumps({
+            "session_id": "test-sess",
+            "transcript_path": sample_jsonl_path,
+            "cwd": "/tmp",
+        })
+        monkeypatch.setattr("sys.stdin", io.StringIO(stdin_data))
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        # Redirect the log path
+        monkeypatch.setattr(
+            "claude_spend.hook.os.path.expanduser",
+            lambda p: str(tmp_path / p.lstrip("~/")) if p.startswith("~") else p,
+        )
+        hook_main()
+
+        log_file = tmp_path / ".claude-spend" / "usage-log.jsonl"
+        assert log_file.exists()
+        entries = load_usage_log(str(log_file))
+        assert len(entries) == 1
+        assert entries[0].session_id == "test-sess"
+
+    def test_main_handles_empty_stdin(self, monkeypatch):
+        """hook main() should not crash on empty stdin."""
+        import io
+        from claude_spend.hook import main as hook_main
+        monkeypatch.setattr("sys.stdin", io.StringIO(""))
+        hook_main()  # should not raise
+
+
     def test_contributions_sum_to_window_total(self):
         now = datetime.now(timezone.utc)
         entries = [
@@ -556,43 +609,78 @@ def load_usage_log(log_path: str) -> list[UsageEntry]:
     return entries
 
 
+def _tail_dedup_keys(log_path: str, n: int = 50) -> set[str]:
+    """Read the last N lines of the log for dedup keys. O(1) vs O(n) full read."""
+    if not os.path.isfile(log_path):
+        return set()
+    keys = set()
+    try:
+        with open(log_path, "rb") as f:
+            f.seek(0, 2)  # end of file
+            size = f.tell()
+            # Read last ~10KB (generous for 50 lines)
+            read_size = min(size, 10240)
+            f.seek(size - read_size)
+            tail = f.read().decode("utf-8", errors="replace")
+            lines = tail.strip().split("\n")
+            for line in lines[-n:]:
+                try:
+                    raw = json.loads(line)
+                    keys.add(f"{raw.get('session_id', '')}:{raw.get('message_id', '')}")
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        pass
+    return keys
+
+
 def append_usage_entry(log_path: str, entry: UsageEntry) -> None:
-    """Append entry to log, skipping if (session_id, message_id) already exists."""
-    existing = load_usage_log(log_path)
-    existing_keys = {_entry_dedup_key(e) for e in existing}
-    if _entry_dedup_key(entry) in existing_keys:
+    """Append entry to log, skipping if (session_id, message_id) seen in last 50 entries."""
+    import fcntl
+
+    dedup_key = _entry_dedup_key(entry)
+    recent_keys = _tail_dedup_keys(log_path)
+    if dedup_key in recent_keys:
         return
 
     os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+    raw = {
+        "ts": entry.ts.isoformat(),
+        "session_id": entry.session_id,
+        "message_id": entry.message_id,
+        "model": entry.model,
+        "input_tokens": entry.input_tokens,
+        "output_tokens": entry.output_tokens,
+        "cache_write_tokens": entry.cache_write_tokens,
+        "cache_read_tokens": entry.cache_read_tokens,
+        "estimated_cost": entry.estimated_cost,
+        "project": entry.project,
+    }
     with open(log_path, "a") as f:
-        raw = {
-            "ts": entry.ts.isoformat(),
-            "session_id": entry.session_id,
-            "message_id": entry.message_id,
-            "model": entry.model,
-            "input_tokens": entry.input_tokens,
-            "output_tokens": entry.output_tokens,
-            "cache_write_tokens": entry.cache_write_tokens,
-            "cache_read_tokens": entry.cache_read_tokens,
-            "estimated_cost": entry.estimated_cost,
-            "project": entry.project,
-        }
-        f.write(json.dumps(raw) + "\n")
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            f.write(json.dumps(raw) + "\n")
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
-def compute_rolling_window(entries: list[UsageEntry], hours: int) -> WindowSummary:
-    """Sum entries within the last `hours` hours."""
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-    in_window = [e for e in entries if e.ts >= cutoff]
+def compute_rolling_window(
+    entries: list[UsageEntry], hours: int, now: datetime | None = None,
+) -> WindowSummary:
+    """Sum entries within the last `hours` hours. Pass `now` for deterministic tests."""
+    if now is None:
+        now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=hours)
+    in_window = [e for e in entries if e.ts > cutoff]  # strict > to avoid boundary ambiguity
     total = sum(e.estimated_cost for e in in_window)
     return WindowSummary(total_cost=total, entry_count=len(in_window), entries=in_window)
 
 
 def compute_session_contributions(
-    entries: list[UsageEntry], hours: int,
+    entries: list[UsageEntry], hours: int, now: datetime | None = None,
 ) -> list[SessionContribution]:
     """Compute each session's fractional contribution to a rolling window."""
-    window = compute_rolling_window(entries, hours)
+    window = compute_rolling_window(entries, hours, now=now)
     if window.total_cost <= 0:
         return []
 
@@ -612,21 +700,35 @@ def compute_session_contributions(
     ]
 
 
+def _log_error(msg: str) -> None:
+    """Append error to ~/.claude-spend/hook.log for debugging."""
+    try:
+        log_dir = os.path.expanduser("~/.claude-spend")
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, "hook.log"), "a") as f:
+            f.write(f"{datetime.now(timezone.utc).isoformat()} {msg}\n")
+    except OSError:
+        pass
+
+
 def main() -> None:
     """Entry point when invoked as a Claude Code Stop hook via stdin."""
     try:
         raw = json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as e:
+        _log_error(f"stdin parse error: {e}")
         return
 
     session_id = raw.get("session_id", "")
     transcript_path = raw.get("transcript_path", "")
 
     if not session_id or not transcript_path:
+        _log_error(f"missing session_id or transcript_path: {raw.keys()}")
         return
 
     entry = extract_latest_usage(transcript_path, session_id)
     if entry is None:
+        _log_error(f"no usage found in {transcript_path}")
         return
 
     log_path = os.path.expanduser("~/.claude-spend/usage-log.jsonl")
@@ -802,7 +904,20 @@ def _parse_iso(s: str | None) -> datetime | None:
 
 
 def _parse_api_response(data: dict) -> QuotaSnapshot:
-    """Parse the JSON response from the usage API into a QuotaSnapshot."""
+    """Parse the JSON response from the usage API into a QuotaSnapshot.
+
+    WARNING: This parses an UNDOCUMENTED API. The schema is community-discovered
+    and may change without notice. If the response shape changes, all percentages
+    will silently default to 0.0.
+    """
+    if "session" not in data:
+        import warnings
+        warnings.warn(
+            f"Unexpected OAuth usage API response shape. Keys: {list(data.keys())}. "
+            "The API may have changed. Quota percentages will be inaccurate.",
+            UserWarning,
+            stacklevel=2,
+        )
     session = data.get("session", {})
     weekly = data.get("weekly", {})
     sonnet = data.get("weekly_sonnet", {})
@@ -1436,7 +1551,7 @@ class QuotaGauge(Static):
 
     def _build_markup(self) -> str:
         pct = self._pct
-        pct_display = int(pct * 100)
+        pct_display = round(pct * 100)
         bar_width = 10
         fill = int(pct * bar_width)
         color = "green" if pct < 0.60 else "dark_orange" if pct < 0.85 else "red"
@@ -1473,7 +1588,7 @@ class QuotaCard(Static):
 
     def _build_markup(self) -> str:
         pct = self._pct
-        pct_display = int(pct * 100)
+        pct_display = round(pct * 100)
         bar_width = 20
         fill = int(pct * bar_width)
         color = "green" if pct < 0.60 else "dark_orange" if pct < 0.85 else "red"
@@ -1826,8 +1941,11 @@ def _populate_limits_table(self) -> None:
             time_label = f"{delta.days}d ago"
 
         in_5h = s.start_time >= cutoff_5h
-        pct_5h = f"{s.estimated_cost / total_5h_cost * 100:.0f}%" if in_5h and total_5h_cost > 0 else "—"
-        pct_7d = f"{s.estimated_cost / total_7d_cost * 100:.1f}%" if total_7d_cost > 0 else "—"
+        # Show session's share of budget (not share of observed spend)
+        pct_5h_val = (s.estimated_cost / budget.five_hour_budget * 100) if in_5h and budget and budget.five_hour_budget > 0 else 0
+        pct_5h = f"{pct_5h_val:.0f}%" if in_5h else "—"
+        pct_7d_val = (s.estimated_cost / budget.weekly_budget * 100) if budget and budget.weekly_budget > 0 else 0
+        pct_7d = f"{pct_7d_val:.1f}%"
 
         table.add_row(time_label, s.project_name, _fmt_cost(s.estimated_cost), pct_5h, pct_7d)
 ```
@@ -1868,16 +1986,31 @@ def _populate_limits_chart(self) -> None:
     if budget_5h <= 0:
         return
 
-    # Compute daily peak 5h cost from session data
+    # Compute daily peak 5h sliding window cost from session data.
+    # For each day, find the maximum cost in any 5h contiguous window.
     now = datetime.now(timezone.utc)
-    daily_peaks: dict[str, float] = {}
+    sessions_by_date: dict[str, list[SessionSummary]] = {}
     for s in self.data.sessions:
         date_str = s.start_time.strftime("%m/%d")
-        daily_peaks[date_str] = daily_peaks.get(date_str, 0.0) + s.estimated_cost
+        sessions_by_date.setdefault(date_str, []).append(s)
 
-    if len(daily_peaks) < 2:
+    if len(sessions_by_date) < 2:
         plt.text("Need 2+ days of data", x=0.5, y=0.5)
         return
+
+    daily_peaks: dict[str, float] = {}
+    for date_str, day_sessions in sessions_by_date.items():
+        # Slide a 5h window across the day's sessions
+        sorted_sessions = sorted(day_sessions, key=lambda s: s.start_time)
+        max_cost = 0.0
+        for anchor in sorted_sessions:
+            window_end = anchor.start_time + timedelta(hours=5)
+            window_cost = sum(
+                s.estimated_cost for s in sorted_sessions
+                if anchor.start_time <= s.start_time < window_end
+            )
+            max_cost = max(max_cost, window_cost)
+        daily_peaks[date_str] = max_cost
 
     dates = sorted(daily_peaks.keys())
     pcts = [min(100, daily_peaks[d] / budget_5h * 100) for d in dates]
@@ -2095,14 +2228,16 @@ def main():
     data = load_all(claude_dir, days=days)
 
     # Load quota state
-    from claude_spend.plan_config import get_active_budget, save_plan_config, DEFAULT_PLAN
+    from claude_spend.plan_config import get_active_budget, save_plan_config, load_plan_config, DEFAULT_PLAN
     from claude_spend.usage_api import fetch_quota_snapshot
     from claude_spend.hook import load_usage_log
     from claude_spend.quota import build_quota_state
 
     config_dir = os.path.expanduser("~/.claude-spend")
     if args.plan:
-        save_plan_config(config_dir, plan=args.plan)
+        current = load_plan_config(config_dir)
+        if current["plan"] != args.plan:
+            save_plan_config(config_dir, plan=args.plan)
 
     budget = get_active_budget(config_dir)
     oauth_snap = fetch_quota_snapshot()
@@ -2447,7 +2582,7 @@ git commit -m "fix: update test assertions for Limits tab, final polish"
 | Task | What it builds | Files | Tests |
 |-|-|-|-|
 | 1 | Plan budget constants + config | `plan_config.py` | 10 |
-| 2 | Hook data layer + rolling windows | `hook.py` | 12 |
+| 2 | Hook data layer + rolling windows + main() | `hook.py` | 14 |
 | 3 | OAuth API client + caching | `usage_api.py` | 9 |
 | 4 | Unified QuotaState merger | `quota.py` | 4 |
 | 5 | Hook install/uninstall CLI | `hook_install.py` | 8 |
@@ -2459,5 +2594,5 @@ git commit -m "fix: update test assertions for Limits tab, final polish"
 | 11 | Integration visual validation | `test_limits_tab.py` | 4 |
 | 12 | Fix regressions + polish | various | varies |
 
-**Total new tests: ~61**
+**Total new tests: ~63**
 **Total commits: 12**
