@@ -457,3 +457,48 @@ async def test_heatmap_frame_duck_type():
     assert len(frame.index) == 2
     assert len(frame.columns) == 2
     assert list(frame.index) == ["r1", "r2"]
+
+
+def test_quota_gauge_renders_bar_and_pct():
+    """QuotaGauge should render a colored progress bar with percentage."""
+    from claude_spend.dashboard import QuotaGauge
+    gauge = QuotaGauge("5h Window", pct=0.78, reset_label="2h 14m")
+    content = str(gauge.render())
+    assert "78%" in content
+    assert "5h Window" in content
+    assert "2h 14m" in content
+
+
+def test_quota_gauge_color_green():
+    from claude_spend.dashboard import QuotaGauge
+    gauge = QuotaGauge("Test", pct=0.30)
+    markup = gauge._build_markup()
+    assert "green" in markup
+
+
+def test_quota_gauge_color_red():
+    from claude_spend.dashboard import QuotaGauge
+    gauge = QuotaGauge("Test", pct=0.90)
+    markup = gauge._build_markup()
+    assert "red" in markup
+
+
+def test_quota_gauge_clamps_above_1():
+    from claude_spend.dashboard import QuotaGauge
+    gauge = QuotaGauge("Test", pct=1.5)
+    content = str(gauge.render())
+    assert "100%" in content
+
+
+def test_quota_card_renders_all_parts():
+    """QuotaCard should render title, bar, reset time, and cost used/budget."""
+    from claude_spend.dashboard import QuotaCard
+    card = QuotaCard(
+        title="5h Session Window", pct=0.78,
+        reset_label="2h 14m", used=3.40, budget=4.40,
+    )
+    content = str(card.render())
+    assert "5h Session Window" in content
+    assert "78%" in content
+    assert "$3.40" in content
+    assert "$4.40" in content
