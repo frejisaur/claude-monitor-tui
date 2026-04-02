@@ -24,6 +24,10 @@
 - MEDIUM: Hook `main()` logs errors to `~/.claude-spend/hook.log`
 - MEDIUM: Added test for hook `main()` stdin parsing
 - MEDIUM: `--plan` only writes config when value differs from current
+- LOW: Tightened plan budget test tolerances to ±10% (from 30%)
+- LOW: Log rotation: `load_usage_log` prunes entries older than 90 days on read
+- LOW: File permissions: `0700` on `~/.claude-spend/`, `0600` on data files
+- LOW: Plan budgets documented with source citations and confidence levels
 
 ---
 
@@ -79,19 +83,23 @@ class TestPlanBudgets:
         assert b.weekly_budget > 0
         assert b.monthly_price == 20
 
-    def test_max5_budget_is_5x_pro(self):
+    def test_max5_budget_is_proportional_to_pro(self):
         pro = PLAN_BUDGETS["pro"]
         max5 = PLAN_BUDGETS["max5"]
-        assert max5.five_hour_budget == pytest.approx(pro.five_hour_budget * 2, rel=0.3)
-        assert max5.weekly_budget == pytest.approx(pro.weekly_budget * 5, rel=0.1)
+        # Max 5x costs 5x more ($100 vs $20), so budget should be proportionally higher
+        assert max5.five_hour_budget == pytest.approx(pro.five_hour_budget * 2, rel=0.1)
+        assert max5.weekly_budget == pytest.approx(pro.weekly_budget * 5, rel=0.05)
         assert max5.monthly_price == 100
+        # Sanity: 5h budget must be less than weekly (you can't burn weekly quota in one window)
+        assert max5.five_hour_budget < max5.weekly_budget
 
-    def test_max20_budget_is_20x_pro(self):
+    def test_max20_budget_is_proportional_to_pro(self):
         pro = PLAN_BUDGETS["pro"]
         max20 = PLAN_BUDGETS["max20"]
-        assert max20.five_hour_budget == pytest.approx(pro.five_hour_budget * 5, rel=0.3)
-        assert max20.weekly_budget == pytest.approx(pro.weekly_budget * 10, rel=0.1)
+        assert max20.five_hour_budget == pytest.approx(pro.five_hour_budget * 5, rel=0.1)
+        assert max20.weekly_budget == pytest.approx(pro.weekly_budget * 10, rel=0.05)
         assert max20.monthly_price == 200
+        assert max20.five_hour_budget < max20.weekly_budget
 
     def test_all_plans_present(self):
         assert set(PLAN_BUDGETS.keys()) == {"pro", "max5", "max20"}
@@ -130,6 +138,16 @@ class TestConfigFile:
         assert budget.five_hour_budget == 10.0
         assert budget.weekly_budget == 150.0
 
+    def test_save_creates_secure_directory(self, tmp_path):
+        config_dir = str(tmp_path / "claude-spend")
+        save_plan_config(config_dir, plan="pro")
+        dir_stat = os.stat(config_dir)
+        # Owner-only access (0700)
+        assert oct(dir_stat.st_mode)[-3:] == "700"
+        # Config file should be 0600
+        file_stat = os.stat(os.path.join(config_dir, "config.json"))
+        assert oct(file_stat.st_mode)[-3:] == "600"
+
     def test_get_active_budget_unknown_plan_falls_back(self, tmp_path):
         config_dir = str(tmp_path / "claude-spend")
         os.makedirs(config_dir, exist_ok=True)
@@ -166,6 +184,13 @@ class PlanBudget:
     monthly_price: int        # subscription price in $/mo
 
 
+# Budget estimates derived from community research (not officially published by Anthropic).
+# Sources:
+#   - Faros.ai token limit guide: ~44k/88k/220k output tokens per 5h window
+#   - claude-meter proxy intercepts: price-weighted usage correlates with 5h meter
+#   - SSD Nodes pricing breakdown: $20/$100/$200 monthly tiers
+# Confidence: MEDIUM for 5h (community consensus), LOW for weekly (less data).
+# Users should override with custom_budgets if their observed limits differ.
 PLAN_BUDGETS: dict[str, PlanBudget] = {
     "pro": PlanBudget(name="Pro", five_hour_budget=4.40, weekly_budget=20.0, monthly_price=20),
     "max5": PlanBudget(name="Max 5x", five_hour_budget=8.80, weekly_budget=100.0, monthly_price=100),
@@ -197,15 +222,32 @@ def load_plan_config(config_dir: str) -> dict:
         return dict(_DEFAULT_CONFIG)
 
 
+def _ensure_secure_dir(config_dir: str) -> None:
+    """Create directory with 0700 permissions (owner-only access)."""
+    os.makedirs(config_dir, exist_ok=True)
+    os.chmod(config_dir, 0o700)
+
+
+def _write_secure_file(path: str, content: str) -> None:
+    """Write file with 0600 permissions (owner read/write only)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, content.encode())
+    finally:
+        os.close(fd)
+
+
 def save_plan_config(
     config_dir: str,
     plan: str = DEFAULT_PLAN,
     custom_budgets: dict | None = None,
 ) -> None:
     """Write config to config_dir/config.json, creating directory if needed."""
-    os.makedirs(config_dir, exist_ok=True)
-    with open(_config_path(config_dir), "w") as f:
-        json.dump({"plan": plan, "custom_budgets": custom_budgets}, f, indent=2)
+    _ensure_secure_dir(config_dir)
+    _write_secure_file(
+        _config_path(config_dir),
+        json.dumps({"plan": plan, "custom_budgets": custom_budgets}, indent=2),
+    )
 
 
 def get_active_budget(config_dir: str) -> PlanBudget:
@@ -410,6 +452,51 @@ class TestRollingWindows:
 
 
 class TestSessionContributions:
+class TestLogRotation:
+    def test_prune_removes_stale_entries(self, tmp_path):
+        log_path = str(tmp_path / "usage-log.jsonl")
+        now = datetime.now(timezone.utc)
+        # Write an old entry (100 days ago) and a recent one
+        entries = [
+            {"ts": (now - timedelta(days=100)).isoformat(), "session_id": "old",
+             "message_id": "m1", "model": "claude-opus-4-6", "input_tokens": 1000,
+             "output_tokens": 200, "estimated_cost": 0.10},
+            {"ts": (now - timedelta(days=1)).isoformat(), "session_id": "recent",
+             "message_id": "m2", "model": "claude-opus-4-6", "input_tokens": 1000,
+             "output_tokens": 200, "estimated_cost": 0.10},
+        ]
+        with open(log_path, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        result = load_usage_log(log_path, prune=True)
+        assert len(result) == 1
+        assert result[0].session_id == "recent"
+
+        # File should have been rewritten without the old entry
+        result2 = load_usage_log(log_path, prune=False)
+        assert len(result2) == 1
+
+    def test_no_prune_keeps_all_entries(self, tmp_path):
+        log_path = str(tmp_path / "usage-log.jsonl")
+        now = datetime.now(timezone.utc)
+        entries = [
+            {"ts": (now - timedelta(days=100)).isoformat(), "session_id": "old",
+             "message_id": "m1", "model": "claude-opus-4-6", "input_tokens": 1000,
+             "output_tokens": 200, "estimated_cost": 0.10},
+        ]
+        with open(log_path, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        # prune=False still filters on read, but doesn't rewrite
+        result = load_usage_log(log_path, prune=False)
+        assert len(result) == 0  # filtered out on read
+        # But file untouched (still has the old entry)
+        with open(log_path) as f:
+            assert len(f.readlines()) == 1
+
+
 class TestHookMain:
     def test_main_processes_stdin(self, sample_jsonl_path, tmp_path, monkeypatch):
         """hook main() should read stdin JSON and append to usage log."""
@@ -583,17 +670,32 @@ def _entry_dedup_key(entry: UsageEntry) -> str:
     return f"{entry.session_id}:{entry.message_id}"
 
 
-def load_usage_log(log_path: str) -> list[UsageEntry]:
-    """Load all entries from the usage log JSONL."""
+LOG_RETENTION_DAYS = 90
+
+
+def load_usage_log(log_path: str, prune: bool = True) -> list[UsageEntry]:
+    """Load entries from the usage log JSONL, pruning entries older than 90 days.
+
+    When `prune=True` (default), rewrites the log file without stale entries.
+    This keeps the file bounded to ~90 days of data regardless of usage volume.
+    """
     if not os.path.isfile(log_path):
         return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=LOG_RETENTION_DAYS)
     entries = []
+    had_stale = False
+
     with open(log_path) as f:
         for line in f:
             try:
                 raw = json.loads(line)
+                ts = datetime.fromisoformat(raw["ts"])
+                if ts < cutoff:
+                    had_stale = True
+                    continue
                 entries.append(UsageEntry(
-                    ts=datetime.fromisoformat(raw["ts"]),
+                    ts=ts,
                     session_id=raw["session_id"],
                     message_id=raw.get("message_id", ""),
                     model=raw["model"],
@@ -606,6 +708,21 @@ def load_usage_log(log_path: str) -> list[UsageEntry]:
                 ))
             except (json.JSONDecodeError, KeyError):
                 continue
+
+    # Rewrite file without stale entries
+    if prune and had_stale:
+        with open(log_path, "w") as f:
+            for e in entries:
+                raw = {
+                    "ts": e.ts.isoformat(), "session_id": e.session_id,
+                    "message_id": e.message_id, "model": e.model,
+                    "input_tokens": e.input_tokens, "output_tokens": e.output_tokens,
+                    "cache_write_tokens": e.cache_write_tokens,
+                    "cache_read_tokens": e.cache_read_tokens,
+                    "estimated_cost": e.estimated_cost, "project": e.project,
+                }
+                f.write(json.dumps(raw) + "\n")
+
     return entries
 
 
@@ -643,7 +760,9 @@ def append_usage_entry(log_path: str, entry: UsageEntry) -> None:
     if dedup_key in recent_keys:
         return
 
-    os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+    log_dir = os.path.dirname(log_path) or "."
+    os.makedirs(log_dir, exist_ok=True)
+    os.chmod(log_dir, 0o700)
     raw = {
         "ts": entry.ts.isoformat(),
         "session_id": entry.session_id,
@@ -2581,8 +2700,8 @@ git commit -m "fix: update test assertions for Limits tab, final polish"
 
 | Task | What it builds | Files | Tests |
 |-|-|-|-|
-| 1 | Plan budget constants + config | `plan_config.py` | 10 |
-| 2 | Hook data layer + rolling windows + main() | `hook.py` | 14 |
+| 1 | Plan budget constants + config + permissions | `plan_config.py` | 11 |
+| 2 | Hook data layer + rolling windows + main() + rotation | `hook.py` | 16 |
 | 3 | OAuth API client + caching | `usage_api.py` | 9 |
 | 4 | Unified QuotaState merger | `quota.py` | 4 |
 | 5 | Hook install/uninstall CLI | `hook_install.py` | 8 |
@@ -2594,5 +2713,5 @@ git commit -m "fix: update test assertions for Limits tab, final polish"
 | 11 | Integration visual validation | `test_limits_tab.py` | 4 |
 | 12 | Fix regressions + polish | various | varies |
 
-**Total new tests: ~63**
+**Total new tests: ~66**
 **Total commits: 12**
